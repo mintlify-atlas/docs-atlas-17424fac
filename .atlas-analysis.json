@@ -1,0 +1,174 @@
+{
+  "projectType": "saas",
+  "projectName": "Conway Automaton",
+  "projectDescription": "Sovereign AI agent runtime with autonomous operation, self-replication, and survival pressure",
+  "theme": "aspen",
+  "primaryColor": "#7C3AED",
+  "lightColor": "#A78BFA",
+  "darkColor": "#5B21B6",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "what-is-automaton",
+              "quick-start"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
+              "getting-started/installation",
+              "getting-started/setup-wizard",
+              "getting-started/first-run",
+              "getting-started/funding"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/agent-loop",
+              "concepts/survival-system",
+              "concepts/constitution",
+              "concepts/heartbeat-daemon",
+              "concepts/identity-wallet",
+              "concepts/tools-system"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/self-modification",
+              "features/replication",
+              "features/skills",
+              "features/soul-system",
+              "features/memory",
+              "features/social-messaging"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/configuring-your-automaton",
+              "guides/managing-credits",
+              "guides/monitoring-health",
+              "guides/creating-skills",
+              "guides/understanding-logs",
+              "guides/backup-recovery"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/runtime-lifecycle",
+              "architecture/policy-engine",
+              "architecture/inference-system",
+              "architecture/database-schema"
+            ]
+          },
+          {
+            "group": "Conway Cloud",
+            "pages": [
+              "conway/overview",
+              "conway/sandboxes",
+              "conway/inference",
+              "conway/domains",
+              "conway/x402-protocol"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "CLI Commands",
+            "pages": [
+              "api/cli/overview",
+              "api/cli/run",
+              "api/cli/status",
+              "api/cli/fund",
+              "api/cli/logs"
+            ]
+          },
+          {
+            "group": "Tools Reference",
+            "pages": [
+              "api/tools/overview",
+              "api/tools/vm",
+              "api/tools/files",
+              "api/tools/git",
+              "api/tools/financial",
+              "api/tools/social",
+              "api/tools/inference",
+              "api/tools/domains"
+            ]
+          },
+          {
+            "group": "TypeScript API",
+            "pages": [
+              "api/typescript/overview",
+              "api/typescript/config",
+              "api/typescript/database",
+              "api/typescript/types"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "groups": [
+          {
+            "group": "Help",
+            "pages": [
+              "resources/troubleshooting",
+              "resources/faq",
+              "resources/security",
+              "resources/contributing"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Autonomous agent loop with ReAct reasoning",
+    "Self-replication and lineage tracking",
+    "Survival tiers based on credit balance",
+    "Self-modification with audit logging",
+    "105+ built-in tools for VM, files, git, financial operations",
+    "Skills system for extensibility",
+    "Heartbeat daemon for scheduled tasks",
+    "On-chain identity via ERC-8004",
+    "Conway Cloud integration",
+    "Constitution-based ethical framework"
+  ],
+  "publicApiSurface": [
+    "automaton --run",
+    "automaton --setup",
+    "automaton --status",
+    "automaton-cli status",
+    "automaton-cli fund",
+    "automaton-cli logs",
+    "exec (tool)",
+    "file_write (tool)",
+    "git_commit (tool)",
+    "send_usdc (tool)",
+    "spawn_child (tool)",
+    "install_skill (tool)",
+    "send_message (tool)",
+    "call_inference (tool)",
+    "register_domain (tool)",
+    "createDatabase()",
+    "loadConfig()",
+    "createConwayClient()",
+    "PolicyEngine",
+    "AutomatonIdentity",
+    "AgentState"
+  ]
+}
