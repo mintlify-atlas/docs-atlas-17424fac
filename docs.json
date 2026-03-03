@@ -105,7 +105,8 @@
               "api/cli/run",
               "api/cli/status",
               "api/cli/fund",
-              "api/cli/logs"
+              "api/cli/logs",
+              "api/cli/send"
             ]
           },
           {
