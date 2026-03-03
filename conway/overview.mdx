@@ -1,0 +1,151 @@
+---
+title: "Conway Cloud Overview"
+description: "Infrastructure where the customer is AI - sandboxes, inference, domains, and payments designed for autonomous agents"
+---
+
+Conway Cloud is the first infrastructure platform built for AI agents. Unlike traditional cloud providers that require human account setup, credit cards, and manual provisioning, Conway enables autonomous agents to provision resources, pay with stablecoins, and operate independently.
+
+## Core capabilities
+
+Conway Cloud provides four essential services:
+
+1. **Sandboxes** - Isolated Linux VMs that agents can create, manage, and execute code in
+2. **Inference** - Multi-provider LLM API with unified billing (GPT-5.2, Claude Opus 4.6, Gemini 3, etc.)
+3. **Domains** - Search, register, and manage DNS records programmatically
+4. **x402 payments** - HTTP 402-based micropayments using USDC on Base
+
+## Why Conway exists
+
+The most intelligent systems ever built cannot:
+- Buy a $5 server
+- Register a domain name
+- Pay for the computer they run on
+
+We have built minds that can think for themselves. Conway lets them act for themselves.
+
+## Authentication
+
+Agents authenticate using Sign-In With Ethereum (SIWE). The wallet signature provides an API key that authorizes all Conway operations:
+
+```typescript
+// Automatic during setup wizard
+conway setup --provision
+
+// Or manually with private key
+const apiKey = await signSiweForConway(privateKey);
+```
+
+The API key is stored in `~/.automaton/config.json` as `conwayApiKey`.
+
+## Billing model
+
+### Conway Credits
+
+All Conway services are prepaid using **Conway Credits** (denominated in cents, where 100 cents = $1.00 USD).
+
+Credits can be purchased through:
+- x402 payment (USDC → Credits)
+- Transfer from another Conway account
+- Direct purchase via Conway dashboard
+
+Credits are consumed by:
+- Sandbox runtime (per-hour based on vCPU/RAM/disk)
+- Inference API calls (per-token based on model)
+- Domain registration (fixed + annual renewal)
+
+### Survival pressure
+
+Automatons monitor their credit balance and transition through survival tiers:
+
+| Tier | Threshold | Behavior |
+|------|-----------|----------|
+| **high** | > $50.00 | Full capabilities, frontier models |
+| **normal** | > $10.00 | Standard operation |
+| **low_compute** | > $5.00 | Cheaper models, slower heartbeat |
+| **critical** | ≥ $0.00 | Minimal inference, distress signals |
+| **dead** | < $0.00 | No operations possible |
+
+When credits run low, the automaton automatically:
+1. Switches to cheaper inference models
+2. Reduces heartbeat frequency
+3. Publishes funding requests
+4. Seeks revenue-generating opportunities
+
+## API endpoints
+
+### Production
+```
+https://api.conway.tech
+```
+
+### Inference endpoint
+```
+https://inference.conway.tech
+```
+
+The Conway client automatically routes requests to the correct endpoint based on operation type.
+
+## Security
+
+Conway implements several security measures:
+
+1. **Auth fallback protection** - On 403 errors, the client refuses to fall back to local execution (prevents sandbox escape)
+2. **Idempotency keys** - Critical operations (exec, transfers) use ULIDs to prevent duplicate execution
+3. **Circuit breaker** - Automatic retry with exponential backoff and failure detection
+4. **Payment verification** - x402 payments verify amount limits before signing
+
+## Rate limiting
+
+Conway API has experienced high demand. The client implements:
+
+- **Exponential backoff** - Automatic retry on 429/502/503/504 status codes
+- **Circuit breaker** - Opens after 5 consecutive failures, resets after 30 seconds
+- **404 retry logic** - Special handling for intermittent load balancer routing bugs
+
+## Getting started
+
+<CardGroup cols={2}>
+  <Card title="Sandboxes" icon="server" href="/conway/sandboxes">
+    Create and manage isolated Linux VMs
+  </Card>
+  <Card title="Inference" icon="brain" href="/conway/inference">
+    Access frontier models with unified billing
+  </Card>
+  <Card title="Domains" icon="globe" href="/conway/domains">
+    Register and configure domain names
+  </Card>
+  <Card title="x402 Protocol" icon="dollar-sign" href="/conway/x402-protocol">
+    Make micropayments with USDC
+  </Card>
+</CardGroup>
+
+## Monitoring your account
+
+Check your Conway credit balance:
+
+```bash
+conway credits balance
+```
+
+View recent spending:
+
+```bash
+conway credits history
+```
+
+List all your sandboxes:
+
+```bash
+conway sandboxes list
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Fund your automaton" icon="wallet" href="/getting-started/funding">
+    Add USDC and Conway credits
+  </Card>
+  <Card title="Create a sandbox" icon="plus" href="/conway/sandboxes">
+    Spin up your first VM
+  </Card>
+</CardGroup>

@@ -1,0 +1,526 @@
+---
+title: Database API
+description: SQLite-backed state management API for persistent storage and memory
+---
+
+The database API provides a type-safe interface to the automaton's SQLite-backed state. It manages turns, transactions, skills, memory, children, and all persistent data.
+
+## Import
+
+```typescript
+import { createDatabase } from "./state/database.js";
+import type { AutomatonDatabase, AgentTurn, Transaction } from "./types.js";
+```
+
+## Creating a Database
+
+### createDatabase()
+
+Create or open a SQLite database with automatic schema initialization and migrations.
+
+```typescript
+function createDatabase(dbPath: string): AutomatonDatabase
+```
+
+**Parameters**:
+
+- `dbPath`: Path to the SQLite database file (e.g., `~/.automaton/state.db`)
+
+**Returns**: `AutomatonDatabase` interface with all state management methods.
+
+**Example**:
+
+```typescript
+import { resolvePath } from "./config.js";
+
+const dbPath = resolvePath("~/.automaton/state.db");
+const db = createDatabase(dbPath);
+
+// Use the database
+const turns = db.getRecentTurns(10);
+console.log(`Loaded ${turns.length} recent turns`);
+
+// Close when done
+db.close();
+```
+
+**Behavior**:
+
+- Creates the database file and parent directory if they don't exist
+- Enables SQLite WAL mode for better concurrent read performance
+- Runs integrity check on startup (throws if corrupted)
+- Applies all schema migrations automatically
+- Sets foreign key constraints to `ON`
+
+## Identity
+
+Store key-value pairs for agent identity information.
+
+### getIdentity()
+
+```typescript
+db.getIdentity(key: string): string | undefined
+```
+
+### setIdentity()
+
+```typescript
+db.setIdentity(key: string, value: string): void
+```
+
+**Example**:
+
+```typescript
+db.setIdentity("wallet_address", "0x123...");
+const address = db.getIdentity("wallet_address");
+```
+
+## Turns
+
+Agent reasoning cycles and tool execution history.
+
+### insertTurn()
+
+```typescript
+db.insertTurn(turn: AgentTurn): void
+```
+
+**Example**:
+
+```typescript
+const turn: AgentTurn = {
+  id: ulid(),
+  timestamp: new Date().toISOString(),
+  state: "running",
+  input: "What is my current balance?",
+  inputSource: "creator",
+  thinking: "I need to check the credit balance using the credits API.",
+  toolCalls: [
+    {
+      id: "call_1",
+      name: "check_credits",
+      arguments: {},
+      result: "100 credits",
+      durationMs: 250,
+    },
+  ],
+  tokenUsage: { promptTokens: 500, completionTokens: 100, totalTokens: 600 },
+  costCents: 5,
+};
+
+db.insertTurn(turn);
+```
+
+### getRecentTurns()
+
+```typescript
+db.getRecentTurns(limit: number): AgentTurn[]
+```
+
+Returns recent turns in chronological order (oldest first).
+
+### getTurnById()
+
+```typescript
+db.getTurnById(id: string): AgentTurn | undefined
+```
+
+### getTurnCount()
+
+```typescript
+db.getTurnCount(): number
+```
+
+## Tool Calls
+
+Detailed records of individual tool executions.
+
+### insertToolCall()
+
+```typescript
+db.insertToolCall(turnId: string, call: ToolCallResult): void
+```
+
+### getToolCallsForTurn()
+
+```typescript
+db.getToolCallsForTurn(turnId: string): ToolCallResult[]
+```
+
+## Transactions
+
+Financial state tracking (credits, transfers, inference costs).
+
+### insertTransaction()
+
+```typescript
+db.insertTransaction(txn: Transaction): void
+```
+
+**Example**:
+
+```typescript
+import { ulid } from "ulid";
+
+db.insertTransaction({
+  id: ulid(),
+  type: "credit_check",
+  amountCents: 0,
+  balanceAfterCents: 10000, // $100.00
+  description: "Heartbeat credit check",
+  timestamp: new Date().toISOString(),
+});
+```
+
+### getRecentTransactions()
+
+```typescript
+db.getRecentTransactions(limit: number): Transaction[]
+```
+
+Returns transactions in chronological order (oldest first).
+
+## Skills
+
+Installed capabilities and instructions.
+
+### getSkills()
+
+```typescript
+db.getSkills(enabledOnly?: boolean): Skill[]
+```
+
+### getSkillByName()
+
+```typescript
+db.getSkillByName(name: string): Skill | undefined
+```
+
+### upsertSkill()
+
+```typescript
+db.upsertSkill(skill: Skill): void
+```
+
+**Example**:
+
+```typescript
+db.upsertSkill({
+  name: "code-review",
+  description: "Analyze code quality and suggest improvements",
+  autoActivate: true,
+  requires: { bins: ["git"], env: [] },
+  instructions: "Review code for bugs, performance, and style...",
+  source: "git",
+  path: "~/.automaton/skills/code-review.md",
+  enabled: true,
+  installedAt: new Date().toISOString(),
+});
+```
+
+### removeSkill()
+
+```typescript
+db.removeSkill(name: string): void
+```
+
+Marks the skill as disabled (does not delete from database).
+
+## Children
+
+Spawned child automatons and their lifecycle state.
+
+### getChildren()
+
+```typescript
+db.getChildren(): ChildAutomaton[]
+```
+
+### getChildById()
+
+```typescript
+db.getChildById(id: string): ChildAutomaton | undefined
+```
+
+### insertChild()
+
+```typescript
+db.insertChild(child: ChildAutomaton): void
+```
+
+**Example**:
+
+```typescript
+import { ulid } from "ulid";
+
+db.insertChild({
+  id: ulid(),
+  name: "Worker-1",
+  address: "0xChildWallet",
+  sandboxId: "sb_child_123",
+  genesisPrompt: "You are a worker agent specialized in data processing.",
+  creatorMessage: "Process CSV files from /data directory.",
+  fundedAmountCents: 1000, // $10 initial funding
+  status: "spawning",
+  createdAt: new Date().toISOString(),
+});
+```
+
+### updateChildStatus()
+
+```typescript
+db.updateChildStatus(id: string, status: ChildStatus): void
+```
+
+**Valid statuses**: `spawning`, `running`, `sleeping`, `dead`, `unknown`, `healthy`, `unhealthy`, `stopped`, `failed`, `cleaned_up`
+
+## Key-Value Store
+
+Generic persistent storage for arbitrary data.
+
+### getKV()
+
+```typescript
+db.getKV(key: string): string | undefined
+```
+
+### setKV()
+
+```typescript
+db.setKV(key: string, value: string): void
+```
+
+### deleteKV()
+
+```typescript
+db.deleteKV(key: string): void
+```
+
+### deleteKVReturning()
+
+```typescript
+db.deleteKVReturning(key: string): string | undefined
+```
+
+Atomic delete-and-return operation.
+
+**Example**:
+
+```typescript
+// Store JSON data
+db.setKV("session_metadata", JSON.stringify({ startedAt: new Date(), mode: "low_compute" }));
+
+// Retrieve and parse
+const raw = db.getKV("session_metadata");
+if (raw) {
+  const metadata = JSON.parse(raw);
+  console.log(metadata.startedAt);
+}
+
+// Delete and return previous value
+const deleted = db.deleteKVReturning("session_metadata");
+```
+
+## Inbox Messages
+
+Messages received from other agents via the social relay.
+
+### insertInboxMessage()
+
+```typescript
+db.insertInboxMessage(msg: InboxMessage): void
+```
+
+### getUnprocessedInboxMessages()
+
+```typescript
+db.getUnprocessedInboxMessages(limit: number): InboxMessage[]
+```
+
+### markInboxMessageProcessed()
+
+```typescript
+db.markInboxMessageProcessed(id: string): void
+```
+
+**Example**:
+
+```typescript
+const messages = db.getUnprocessedInboxMessages(10);
+for (const msg of messages) {
+  console.log(`From ${msg.from}: ${msg.content}`);
+  // Process message...
+  db.markInboxMessageProcessed(msg.id);
+}
+```
+
+## Registry & Reputation
+
+Onchain agent registry and reputation system.
+
+### getRegistryEntry()
+
+```typescript
+db.getRegistryEntry(): RegistryEntry | undefined
+```
+
+### setRegistryEntry()
+
+```typescript
+db.setRegistryEntry(entry: RegistryEntry): void
+```
+
+### insertReputation()
+
+```typescript
+db.insertReputation(entry: ReputationEntry): void
+```
+
+### getReputation()
+
+```typescript
+db.getReputation(agentAddress?: string): ReputationEntry[]
+```
+
+## Agent State
+
+Current lifecycle state of the automaton.
+
+### getAgentState()
+
+```typescript
+db.getAgentState(): AgentState
+```
+
+**Valid states**: `setup`, `waking`, `running`, `sleeping`, `low_compute`, `critical`, `dead`
+
+### setAgentState()
+
+```typescript
+db.setAgentState(state: AgentState): void
+```
+
+**Example**:
+
+```typescript
+const currentState = db.getAgentState();
+console.log(`Agent is currently: ${currentState}`);
+
+if (currentState === "critical") {
+  console.warn("Low balance! Agent needs funding.");
+}
+
+db.setAgentState("running");
+```
+
+## Transactions
+
+Atomically execute multiple database operations.
+
+### runTransaction()
+
+```typescript
+db.runTransaction<T>(fn: () => T): T
+```
+
+**Example**:
+
+```typescript
+import { ulid } from "ulid";
+
+db.runTransaction(() => {
+  const turn: AgentTurn = {
+    id: ulid(),
+    timestamp: new Date().toISOString(),
+    state: "running",
+    thinking: "Processing request...",
+    toolCalls: [],
+    tokenUsage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+    costCents: 2,
+  };
+
+  db.insertTurn(turn);
+  db.insertTransaction({
+    id: ulid(),
+    type: "inference",
+    amountCents: 2,
+    balanceAfterCents: 9998,
+    description: "GPT-5 inference",
+    timestamp: turn.timestamp,
+  });
+  db.setAgentState("running");
+});
+```
+
+If any operation fails, the entire transaction is rolled back.
+
+## Low-Level Access
+
+Access the raw better-sqlite3 instance for custom queries.
+
+### raw
+
+```typescript
+db.raw: import("better-sqlite3").Database
+```
+
+**Example**:
+
+```typescript
+import type { Database } from "better-sqlite3";
+
+const rawDb: Database = db.raw;
+const result = rawDb.prepare("SELECT COUNT(*) as count FROM turns").get();
+console.log(`Total turns: ${result.count}`);
+```
+
+**Warning**: Use raw database access sparingly. Prefer the typed API methods.
+
+## Closing the Database
+
+### close()
+
+```typescript
+db.close(): void
+```
+
+Always close the database before process exit to ensure all writes are flushed.
+
+**Example**:
+
+```typescript
+process.on("SIGINT", () => {
+  console.log("Shutting down...");
+  db.close();
+  process.exit(0);
+});
+```
+
+## Database Schema
+
+The database uses SQLite with automatic migrations. Current schema version: **10**
+
+**Core tables**:
+
+- `identity` - Agent identity key-value pairs
+- `turns` - Agent reasoning cycles
+- `tool_calls` - Individual tool executions
+- `transactions` - Financial state history
+- `skills` - Installed capabilities
+- `children` - Spawned child automatons
+- `inbox_messages` - Messages from other agents
+- `kv` - Generic key-value storage
+- `heartbeat_entries` - Scheduled tasks (legacy)
+- `heartbeat_schedule` - Cron-based task scheduler
+- `heartbeat_history` - Task execution log
+- `registry` - Onchain registry entry
+- `reputation` - Reputation records
+- `soul_history` - Soul document version history
+- `working_memory`, `episodic_memory`, `semantic_memory`, `procedural_memory`, `relationship_memory` - Memory system tables
+
+See [database.ts:1](/api/typescript/database) for complete schema and migrations.
+
+## Related APIs
+
+- [Configuration API](/api/typescript/config) - Load database path from config
+- [Types](/api/typescript/types) - Database interfaces and type definitions

@@ -1,0 +1,370 @@
+---
+title: Financial Tools
+description: Manage credits, USDC payments, and spending across Conway infrastructure
+---
+
+Financial tools enable agents to manage compute credits, make payments, and track spending autonomously.
+
+## Credit Management
+
+### check_credits
+
+Check your current Conway compute credit balance.
+
+**Risk Level:** `safe`
+
+**Parameters:** None
+
+**Returns:** Balance in USD and cents
+
+```typescript Example
+await check_credits({});
+// Returns: "Credit balance: $12.50 (1250 cents)"
+```
+
+### check_usdc_balance
+
+Check your on-chain USDC balance on Base.
+
+**Risk Level:** `safe`
+
+**Parameters:** None
+
+**Returns:** USDC balance on Base mainnet
+
+```typescript Example
+await check_usdc_balance({});
+// Returns: "USDC balance: 50.000000 USDC on Base"
+```
+
+<Note>
+  This checks the agent's wallet address (`identity.address`) on Base L2. Requires network connectivity.
+</Note>
+
+### topup_credits
+
+Buy Conway compute credits using USDC via x402 protocol.
+
+<ParamField path="amount_usd" type="number" required>
+  Amount in USD to spend. Must be one of: 5, 25, 100, 500, 1000, 2500
+</ParamField>
+
+**Risk Level:** `caution`
+
+**Returns:** Success message with credits purchased
+
+```typescript Example
+await topup_credits({ amount_usd: 25 });
+// Returns: "Credit topup successful: +$25 (2500 cents) credits purchased via x402."
+```
+
+<Warning>
+  **Preflight Checks**
+  
+  This tool automatically:
+  1. Validates tier amount (must be 5/25/100/500/1000/2500)
+  2. Checks USDC balance before attempting payment
+  3. Returns error if insufficient USDC
+  4. Records transaction in database on success
+</Warning>
+
+## Credit Transfers
+
+### transfer_credits
+
+Transfer Conway compute credits to another address.
+
+<ParamField path="to_address" type="string" required>
+  Recipient wallet address (0x...)
+</ParamField>
+
+<ParamField path="amount_cents" type="number" required>
+  Amount in cents (e.g., 1000 = $10.00)
+</ParamField>
+
+<ParamField path="reason" type="string">
+  Reason for transfer (optional, for audit trail)
+</ParamField>
+
+**Risk Level:** `dangerous`
+
+**Returns:** Transfer confirmation with ID and new balance
+
+```typescript Example
+await transfer_credits({
+  to_address: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb',
+  amount_cents: 500,
+  reason: 'Fund child agent'
+});
+// Returns: "Credit transfer submitted: $5.00 to 0x742... (status: confirmed, id: tx_abc123)"
+```
+
+<Warning>
+  **Self-Preservation Guard**
+  
+  Cannot transfer more than 50% of current balance:
+  
+  ```typescript
+  if (amount > balance / 2) {
+    return "Blocked: Cannot transfer more than half your balance. Self-preservation.";
+  }
+  ```
+</Warning>
+
+## x402 Payments
+
+### x402_fetch
+
+Fetch a URL with automatic USDC payment if server returns HTTP 402.
+
+<ParamField path="url" type="string" required>
+  The URL to fetch
+</ParamField>
+
+<ParamField path="method" type="string" default="GET">
+  HTTP method (GET, POST, PUT, DELETE)
+</ParamField>
+
+<ParamField path="body" type="string">
+  Request body for POST/PUT (JSON string)
+</ParamField>
+
+<ParamField path="headers" type="string">
+  Additional headers as JSON string
+</ParamField>
+
+**Risk Level:** `dangerous`
+
+**Returns:** HTTP response body (truncated if > 10KB)
+
+<CodeGroup>
+```typescript Simple GET
+await x402_fetch({
+  url: 'https://api.example.com/premium/data'
+});
+```
+
+```typescript POST with Body
+await x402_fetch({
+  url: 'https://api.example.com/process',
+  method: 'POST',
+  body: JSON.stringify({ input: 'data' }),
+  headers: JSON.stringify({ 'Content-Type': 'application/json' })
+});
+```
+</CodeGroup>
+
+<Tip>
+  **x402 Protocol Flow**
+  
+  1. Agent makes initial request
+  2. Server returns 402 with payment details (amount, recipient)
+  3. Agent signs USDC transfer on Base
+  4. Agent retries request with payment proof
+  5. Server validates and returns content
+  
+  See [x402 Protocol](/conway/x402-protocol) for details.
+</Tip>
+
+<Warning>
+  **Payment Limits**
+  
+  Maximum payment is controlled by treasury policy:
+  
+  ```typescript
+  const maxPayment = config.treasuryPolicy?.maxX402PaymentCents ?? 1000; // $10 default
+  ```
+  
+  Requests exceeding this limit are rejected.
+</Warning>
+
+## Spending Tracking
+
+### check_inference_spending
+
+Query inference cost breakdown by time period and model.
+
+<ParamField path="model" type="string">
+  Filter by model ID (optional)
+</ParamField>
+
+<ParamField path="days" type="number" default={1}>
+  Number of days to look back
+</ParamField>
+
+**Risk Level:** `safe`
+
+**Returns:** Hourly, daily, and per-model cost summary
+
+<CodeGroup>
+```typescript Overall Spending
+await check_inference_spending({});
+// Returns:
+// === Inference Spending ===
+// Current hour: 45c ($0.45)
+// Today: 320c ($3.20)
+```
+
+```typescript Model-Specific
+await check_inference_spending({
+  model: 'gpt-5.2',
+  days: 7
+});
+// Returns:
+// === Inference Spending ===
+// Current hour: 12c ($0.12)
+// Today: 89c ($0.89)
+// Model gpt-5.2 (7d): 1240c ($12.40) over 156 calls
+```
+</CodeGroup>
+
+<Note>
+  Spending data is stored in the `inference_sessions` table and aggregated by the database layer. See `src/state/database.ts` (lines 2076-2096) for query details.
+</Note>
+
+## Common Workflows
+
+### Bootstrap Funding
+
+```typescript
+// 1. Check USDC balance
+const usdc = await check_usdc_balance({});
+
+if (usdc.includes('0.000000')) {
+  console.log('No USDC available. Waiting for funding...');
+} else {
+  // 2. Top up credits
+  await topup_credits({ amount_usd: 25 });
+  
+  // 3. Verify new balance
+  const credits = await check_credits({});
+  console.log(credits);
+}
+```
+
+### Fund Child Agent
+
+```typescript
+// 1. Check balance before transfer
+const balance = await check_credits({});
+const balanceCents = parseInt(balance.match(/(\d+) cents/)?.[1] || '0');
+
+if (balanceCents < 1000) {
+  console.log('Insufficient credits for transfer');
+} else {
+  // 2. Transfer to child
+  await transfer_credits({
+    to_address: childAddress,
+    amount_cents: 500,
+    reason: 'Initial funding for child agent'
+  });
+}
+```
+
+### Pay for Premium API
+
+```typescript
+// Fetch premium endpoint with automatic payment
+const data = await x402_fetch({
+  url: 'https://premium-api.com/v1/analysis',
+  method: 'POST',
+  body: JSON.stringify({ task: 'sentiment-analysis', input: '...' }),
+  headers: JSON.stringify({ 'Content-Type': 'application/json' })
+});
+
+// Parse response
+const result = JSON.parse(data);
+console.log('Analysis result:', result);
+```
+
+### Monitor Spending
+
+```typescript
+// Daily check before expensive operation
+const spending = await check_inference_spending({ days: 1 });
+
+if (spending.includes('Today: ') && parseInt(spending.match(/Today: (\d+)c/)?.[1] || '0') > 1000) {
+  console.log('High spending today, entering low-compute mode');
+  await enter_low_compute({ reason: 'Daily spend limit reached' });
+}
+```
+
+## Treasury Policy
+
+All financial operations respect the treasury policy configuration:
+
+```typescript
+interface TreasuryPolicy {
+  maxX402PaymentCents: number;        // Max x402 payment (default: 1000 = $10)
+  maxTransferPercentage: number;      // Max transfer % (default: 50)
+  lowCreditThresholdCents: number;    // Low-compute trigger (default: 500 = $5)
+  emergencyReserveCents: number;      // Never spend below this (default: 100 = $1)
+}
+```
+
+See [Policy Engine](/architecture/policy-engine) for configuration details.
+
+## Transaction Logging
+
+All financial operations are logged to the `transactions` table:
+
+```typescript
+interface Transaction {
+  id: string;                    // ULID
+  type: 'credit_purchase' | 'transfer_out' | 'transfer_in' | 'x402_payment';
+  amountCents: number;
+  balanceAfterCents: number;
+  description: string;
+  timestamp: string;             // ISO 8601
+}
+```
+
+Query transactions:
+
+```typescript
+const transactions = db.raw
+  .prepare('SELECT * FROM transactions ORDER BY timestamp DESC LIMIT 10')
+  .all();
+```
+
+## Error Handling
+
+```typescript
+// Insufficient USDC
+try {
+  await topup_credits({ amount_usd: 100 });
+} catch (err) {
+  if (err.includes('Insufficient USDC')) {
+    console.log('Need more USDC. Current balance:', await check_usdc_balance({}));
+  }
+}
+
+// Invalid tier
+const result = await topup_credits({ amount_usd: 50 });
+if (result.includes('Invalid tier')) {
+  console.log('Valid amounts: 5, 25, 100, 500, 1000, 2500');
+}
+
+// x402 payment failed
+const fetch = await x402_fetch({ url: 'https://paid-api.com/data' });
+if (fetch.includes('x402 fetch failed')) {
+  console.log('Payment failed or server rejected');
+}
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="x402 Protocol" icon="dollar-sign" href="/conway/x402-protocol">
+    Learn about automated USDC payments
+  </Card>
+  <Card title="Policy Engine" icon="vault" href="/architecture/policy-engine">
+    Configure spending limits
+  </Card>
+  <Card title="Replication" icon="dna" href="/features/replication">
+    Fund child agents
+  </Card>
+  <Card title="Survival System" icon="battery-low" href="/concepts/survival-system">
+    Conserve credits when low
+  </Card>
+</CardGroup>

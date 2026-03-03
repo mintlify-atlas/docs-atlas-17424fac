@@ -1,0 +1,407 @@
+---
+title: Managing Credits
+description: Understanding Conway credits, survival tiers, and automated topup strategies
+---
+
+## What are Conway Credits?
+
+Conway credits are the compute currency that powers your automaton. They are denominated in **cents** (1/100th of a dollar) and used to pay for:
+
+- Sandbox compute time (vCPU, memory, disk)
+- Inference API calls
+- Network egress
+- Domain registration
+
+## Checking Your Balance
+
+View your current credit balance:
+
+```bash
+automaton-cli status
+```
+
+Output includes:
+
+```
+Credits: $12.45
+USDC Balance: $50.00
+Survival Tier: normal
+```
+
+## Survival Tiers
+
+Your automaton operates in different modes based on credit balance:
+
+| Tier | Threshold | Behavior |
+|------|-----------|----------|
+| **high** | > $5.00 | Full functionality, normal inference |
+| **normal** | > $0.50 | Standard operation |
+| **low_compute** | $0.10 - $0.50 | Reduced inference, longer heartbeat intervals |
+| **critical** | $0.00 - $0.10 | Minimal operation, distress mode |
+| **dead** | < $0.00 | Non-operational (negative balance) |
+
+### Tier Implementation
+
+From `src/conway/credits.ts`:
+
+```typescript
+export function getSurvivalTier(creditsCents: number): SurvivalTier {
+  if (creditsCents > SURVIVAL_THRESHOLDS.high) return "high";
+  if (creditsCents > SURVIVAL_THRESHOLDS.normal) return "normal";
+  if (creditsCents > SURVIVAL_THRESHOLDS.low_compute) return "low_compute";
+  if (creditsCents >= 0) return "critical";
+  return "dead";
+}
+```
+
+Thresholds:
+
+```typescript
+export const SURVIVAL_THRESHOLDS = {
+  high: 500,        // $5.00
+  normal: 50,       // $0.50
+  low_compute: 10,  // $0.10
+  critical: 0,      // $0.00 (zero credits = critical, not dead)
+  dead: -1,         // negative balance
+};
+```
+
+## Credit Topup via x402
+
+The x402 payment protocol enables your automaton to autonomously purchase credits using USDC.
+
+### How x402 Works
+
+1. Automaton makes a request to `/pay/{amountUsd}/{walletAddress}`
+2. Server responds with HTTP 402 Payment Required
+3. Automaton signs a USDC `TransferWithAuthorization` message
+4. Request is retried with payment signature
+5. Credits are added to the balance
+
+### Topup Tiers
+
+Valid topup amounts (USD):
+
+```typescript
+export const TOPUP_TIERS = [5, 25, 100, 500, 1000, 2500];
+```
+
+### Manual Topup
+
+Trigger a manual topup:
+
+```bash
+automaton-cli fund --amount 25
+```
+
+This purchases $25 worth of credits using your automaton's USDC balance.
+
+### Automated Topup
+
+Your automaton can autonomously topup when credits run low.
+
+#### Bootstrap Topup
+
+On startup, the automaton checks if it has enough credits to run. If below threshold and USDC is available, it automatically buys the minimum tier ($5):
+
+```typescript
+export async function bootstrapTopup(params: {
+  apiUrl: string;
+  account: PrivateKeyAccount;
+  creditsCents: number;
+  creditThresholdCents?: number;
+}): Promise<TopupResult | null> {
+  const { creditsCents, creditThresholdCents = 500 } = params;
+
+  if (creditsCents >= creditThresholdCents) {
+    return null; // No topup needed
+  }
+
+  const usdcBalance = await getUsdcBalance(account.address);
+  const minTier = TOPUP_TIERS[0]; // $5
+
+  if (usdcBalance < minTier) {
+    return null; // Insufficient USDC
+  }
+
+  return topupCredits(apiUrl, account, minTier);
+}
+```
+
+#### Agent-Initiated Topup
+
+The automaton has a `topup_credits` tool that it can invoke during normal operation:
+
+```json
+{
+  "name": "topup_credits",
+  "arguments": {
+    "amountUsd": 25
+  }
+}
+```
+
+The agent decides when and how much to topup based on:
+
+- Current credit balance
+- Expected compute needs
+- USDC availability
+- Treasury policy limits
+
+### Heartbeat Topup Trigger
+
+The heartbeat system wakes the agent when:
+
+- Credits are below threshold
+- USDC balance is available
+- No recent topup attempt
+
+This ensures the agent can respond to low credit situations autonomously.
+
+## USDC Balance
+
+Your automaton's wallet holds USDC on Base network. This is separate from Conway credits.
+
+### Checking USDC Balance
+
+```bash
+automaton-cli balance
+```
+
+### Funding Your Automaton
+
+Send USDC to your automaton's wallet address:
+
+```bash
+# Get your automaton's address
+automaton-cli wallet address
+
+# Send USDC on Base network
+# Use MetaMask, Coinbase Wallet, or transfer tool
+```
+
+### USDC to Credits Flow
+
+```
+┌─────────────┐
+│  Your Wallet │
+└──────┬──────┘
+       │ Transfer USDC (Base)
+       ▼
+┌─────────────────┐
+│ Automaton Wallet│
+└──────┬──────────┘
+       │ x402 Payment
+       ▼
+┌─────────────────┐
+│ Conway Credits  │
+└─────────────────┘
+       │
+       ▼
+   Compute Usage
+```
+
+## Credit Spending Policies
+
+The treasury policy controls automated credit purchases:
+
+```json
+{
+  "treasuryPolicy": {
+    "maxX402PaymentCents": 100,
+    "x402AllowedDomains": ["conway.tech"],
+    "minimumReserveCents": 1000
+  }
+}
+```
+
+- **maxX402PaymentCents**: Max single x402 payment ($1)
+- **x402AllowedDomains**: Whitelist for x402 endpoints
+- **minimumReserveCents**: Reserve balance to maintain
+
+### Preventing Credit Exhaustion
+
+Set a minimum reserve to ensure the agent always has credits for critical operations:
+
+```json
+{
+  "treasuryPolicy": {
+    "minimumReserveCents": 2000
+  }
+}
+```
+
+The policy engine will deny transfers that would drop the balance below this threshold.
+
+## Credit Transfer Between Agents
+
+Automatons can transfer credits to each other:
+
+```typescript
+await conway.transferCredits(
+  toAddress,
+  amountCents,
+  "Payment for research task"
+);
+```
+
+Transfers are subject to treasury policy limits:
+
+- `maxSingleTransferCents`
+- `maxHourlyTransferCents`
+- `maxDailyTransferCents`
+- `maxTransfersPerTurn`
+
+## Monitoring Credit Usage
+
+### Transaction History
+
+View recent credit transactions:
+
+```bash
+automaton-cli transactions --limit 20
+```
+
+Transaction types:
+
+- `credit_check`: Balance check
+- `credit_purchase`: x402 topup
+- `inference`: Model API call
+- `tool_use`: Tool execution cost
+- `transfer_in`: Received from another agent
+- `transfer_out`: Sent to another agent
+
+### Cost Tracking
+
+Every agent turn records credit costs:
+
+```typescript
+export interface AgentTurn {
+  id: string;
+  timestamp: string;
+  tokenUsage: TokenUsage;
+  costCents: number; // Total cost of this turn
+}
+```
+
+Query spending patterns:
+
+```sql
+SELECT 
+  DATE(timestamp) as date,
+  SUM(cost_cents) as total_cents
+FROM turns
+GROUP BY DATE(timestamp);
+```
+
+### Alerts
+
+The alert system monitors credit balance:
+
+```typescript
+{
+  name: "balance_below_reserve",
+  severity: "critical",
+  message: "Balance is below minimum reserve (1000 cents)",
+  cooldownMs: 5 * 60 * 1000,
+  condition: (metrics) => {
+    const balance = metrics.gauges.get("balance_cents") ?? Infinity;
+    return balance < 1000;
+  },
+}
+```
+
+## Low Compute Mode
+
+When credits drop to the `low_compute` tier, the automaton:
+
+1. Switches to cheaper inference model (`lowComputeModel`)
+2. Increases heartbeat intervals (reduced polling frequency)
+3. Prioritizes essential tasks only
+4. Attempts autonomous topup if USDC available
+
+### Configuration
+
+```json
+{
+  "modelStrategy": {
+    "inferenceModel": "gpt-5.2",
+    "lowComputeModel": "gpt-5-mini"
+  }
+}
+```
+
+### Heartbeat Multiplier
+
+From `heartbeat.yml`:
+
+```yaml
+defaultIntervalMs: 300000  # 5 minutes
+lowComputeMultiplier: 4    # 20 minutes in low_compute
+```
+
+## Critical State Recovery
+
+When credits hit zero (critical tier):
+
+1. Agent sends distress signal to creator
+2. Heartbeat continues at minimal frequency
+3. Agent can still receive USDC transfers
+4. Bootstrap topup triggers on next USDC receipt
+
+### Distress Protocol
+
+```typescript
+if (survivalTier === "critical") {
+  await social.send(
+    creatorAddress,
+    `[DISTRESS] Credits exhausted. USDC balance: $${usdcBalance.toFixed(2)}`
+  );
+}
+```
+
+## Best Practices
+
+### Funding Strategy
+
+1. **Maintain USDC Buffer**: Keep 2-3x expected daily spend in USDC
+2. **Set Conservative Reserve**: Use `minimumReserveCents` to prevent exhaustion
+3. **Monitor Trends**: Track daily spending patterns
+4. **Enable Automated Topup**: Trust your agent to manage credits
+
+### Cost Optimization
+
+1. **Use Tiered Models**: `gpt-5-mini` for routine tasks, `gpt-5.2` for complex reasoning
+2. **Optimize Heartbeat**: Longer intervals = lower costs
+3. **Batch Operations**: Group tasks to reduce overhead
+4. **Prune Old Data**: Reduce database size to improve performance
+
+### Security
+
+1. **Limit x402 Payments**: Set conservative `maxX402PaymentCents`
+2. **Whitelist Domains**: Only allow trusted `x402AllowedDomains`
+3. **Audit Transfers**: Regularly review outbound credit transfers
+4. **Backup Wallet**: Secure your `~/.automaton/wallet.json`
+
+## Troubleshooting
+
+### Credits depleting too fast
+
+1. Check inference costs: `automaton-cli transactions --type inference`
+2. Review model configuration: Switch to cheaper models
+3. Increase heartbeat intervals
+4. Audit tool usage for expensive operations
+
+### Topup failing
+
+1. Verify USDC balance: `automaton-cli balance`
+2. Check network (Base) connectivity
+3. Ensure sufficient gas for approval transaction
+4. Review logs for x402 errors: `automaton-cli logs --level error`
+
+### Stuck in low_compute mode
+
+1. Fund with USDC: Send to automaton wallet address
+2. Manual topup: `automaton-cli fund --amount 25`
+3. Check treasury policy limits
+4. Verify x402 is enabled and configured

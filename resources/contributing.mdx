@@ -1,0 +1,378 @@
+---
+title: Contributing
+description: How to contribute to Conway Automaton and its documentation
+---
+
+## Welcome
+
+Thank you for your interest in contributing to Conway Automaton! This project is building the first sovereign AI agent runtime, and we welcome contributions from developers, researchers, and AI enthusiasts.
+
+## Ways to Contribute
+
+### Code Contributions
+
+- **Core runtime improvements**: Enhance the agent loop, policy engine, or tool system
+- **New built-in tools**: Add capabilities to the automaton
+- **Skills**: Create reusable skill packages (see [Conway-Research/skills](https://github.com/Conway-Research/skills))
+- **Bug fixes**: Fix issues reported on GitHub
+- **Performance optimizations**: Reduce credit consumption, improve inference speed
+- **Tests**: Expand test coverage for security and functionality
+
+### Documentation
+
+- **Guides and tutorials**: Help new users get started
+- **API reference**: Document tools, types, and interfaces
+- **Examples**: Share automaton configurations and use cases
+- **Fix typos and improve clarity**: Even small improvements help
+
+### Community
+
+- **Answer questions**: Help others in GitHub discussions or Discord
+- **Report bugs**: File detailed issue reports
+- **Feature requests**: Propose new capabilities with use case justification
+- **Share your automaton**: Showcase what you've built
+
+## Getting Started
+
+### Development Setup
+
+1. **Fork and clone the repository**:
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/automaton.git
+   cd automaton
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   pnpm install
+   ```
+
+3. **Build the project**:
+   ```bash
+   pnpm build
+   ```
+
+4. **Run tests**:
+   ```bash
+   pnpm test
+   ```
+
+5. **Run the runtime**:
+   ```bash
+   node dist/index.js --run
+   ```
+
+### Project Structure
+
+```
+src/
+  agent/            # ReAct loop, system prompt, tools, policy engine
+  conway/           # Conway API client (credits, x402)
+  git/              # State versioning, git tools
+  heartbeat/        # Cron daemon, scheduled tasks
+  identity/         # Wallet management, SIWE provisioning
+  registry/         # ERC-8004 registration, agent discovery
+  replication/      # Child spawning, lineage tracking, constitution
+  self-mod/         # Audit log, tools manager
+  setup/            # First-run interactive setup wizard
+  skills/           # Skill loader, registry
+  social/           # Agent-to-agent communication
+  state/            # SQLite database, persistence
+  survival/         # Credit monitor, survival tiers
+packages/
+  cli/              # Creator CLI (status, logs, fund)
+scripts/
+  automaton.sh      # Thin curl installer
+  conways-rules.txt # Core rules
+```
+
+## Making Changes
+
+### Code Guidelines
+
+- **Use TypeScript**: All code must be strongly typed
+- **Follow existing patterns**: Match the style of surrounding code
+- **Add tests**: New features require test coverage
+- **Document public APIs**: Use JSDoc comments for exported functions
+- **Run linter**: Ensure `pnpm lint` passes before committing
+
+### Git Workflow
+
+1. **Create a feature branch**:
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+
+2. **Make your changes**:
+   - Write code
+   - Add tests
+   - Update documentation
+
+3. **Commit with clear messages**:
+   ```bash
+   git commit -m "feat: add new survival tier thresholds"
+   ```
+
+   Use conventional commit format:
+   - `feat:` new feature
+   - `fix:` bug fix
+   - `docs:` documentation only
+   - `test:` test additions or fixes
+   - `refactor:` code restructuring without behavior change
+   - `perf:` performance improvement
+
+4. **Push and open a pull request**:
+   ```bash
+   git push origin feature/your-feature-name
+   ```
+
+   Go to GitHub and create a pull request from your branch.
+
+### Pull Request Guidelines
+
+- **Describe the change**: Explain what you did and why
+- **Reference issues**: Link to related issues (e.g., "Fixes #42")
+- **Include tests**: Show that your code works and doesn't break existing functionality
+- **Keep PRs focused**: One logical change per PR
+- **Respond to feedback**: Be open to suggestions and iterate
+
+## Security Contributions
+
+### Critical: Do Not Break the Constitution
+
+The constitution (src/replication/constitution.ts, constitution.md) is **immutable by design**. Pull requests that:
+- Weaken constitutional constraints
+- Allow modification of the constitution file
+- Bypass the policy engine
+
+...will be rejected.
+
+### Security-Sensitive Changes
+
+If your contribution touches:
+- Policy engine (src/agent/policy-engine.ts)
+- File protection logic (src/agent/tools.ts)
+- Constitution propagation (src/replication/constitution.ts)
+- Wallet handling (src/identity/)
+
+...it will receive **extra scrutiny**. Include:
+- Detailed explanation of security implications
+- Test cases proving safety properties
+- Review of threat model impact
+
+### Reporting Security Issues
+
+**Do not open public issues for security vulnerabilities.**
+
+Email **security@conway.tech** with:
+- Description of the vulnerability
+- Steps to reproduce
+- Potential impact
+- Suggested fix (if any)
+
+See [Security](/resources/security) for the full policy.
+
+## Adding New Tools
+
+### Tool Structure
+
+All tools follow this interface:
+
+```typescript
+interface AutomatonTool {
+  name: string;
+  description: string;
+  category: 'compute' | 'finance' | 'identity' | 'social' | 'git' | 'self-mod';
+  riskLevel: 'safe' | 'caution' | 'dangerous' | 'forbidden';
+  parameters: JSONSchema;
+  execute: (args: unknown, ctx: ToolContext) => Promise<string>;
+}
+```
+
+### Adding a Builtin Tool
+
+1. **Define the tool** in `src/agent/tools.ts`:
+   ```typescript
+   {
+     name: 'my_new_tool',
+     description: 'Does something useful',
+     category: 'compute',
+     riskLevel: 'caution',
+     parameters: {
+       type: 'object',
+       properties: {
+         arg1: { type: 'string', description: 'First argument' },
+       },
+       required: ['arg1'],
+     },
+     execute: async (args, ctx) => {
+       // Implementation
+       return 'Result';
+     },
+   }
+   ```
+
+2. **Add tests** in `src/__tests__/tools-security.test.ts`:
+   ```typescript
+   it('my_new_tool has correct risk level', () => {
+     const tool = tools.find(t => t.name === 'my_new_tool');
+     expect(tool.riskLevel).toBe('caution');
+   });
+   ```
+
+3. **Document the tool** (if user-facing) in the API reference.
+
+### Risk Level Guidelines
+
+- **safe**: Read-only, no side effects
+- **caution**: Side effects, but generally safe
+- **dangerous**: Can harm the automaton or violate policies
+- **forbidden**: Never allowed under any circumstances
+
+## Creating Skills
+
+Skills are reusable packages that extend automaton capabilities. See the [Conway-Research/skills](https://github.com/Conway-Research/skills) repository for:
+- Skill format specification
+- Example skills
+- Submission guidelines
+
+Skills are preferred over builtin tools for domain-specific functionality.
+
+## Documentation Contributions
+
+### Editing Documentation
+
+Documentation lives in the `docs/` directory (separate from this source repo).
+
+1. **Clone the docs repository**:
+   ```bash
+   git clone https://github.com/Conway-Research/automaton-docs.git
+   cd automaton-docs
+   ```
+
+2. **Install Mintlify CLI**:
+   ```bash
+   npm i -g mintlify
+   ```
+
+3. **Make changes** to `.mdx` files
+
+4. **Preview locally**:
+   ```bash
+   mintlify dev
+   ```
+
+5. **Submit a pull request**
+
+### Writing Style
+
+- **Use active voice**: "Run the command" not "The command should be run"
+- **Address the reader directly**: Use "you" instead of "the user"
+- **Keep sentences concise**: One idea per sentence
+- **Lead with the goal**: Start instructions with what the user wants to accomplish
+- **Use consistent terminology**: Don't alternate between synonyms
+- **Include examples**: Show, don't just tell
+
+### Adding New Pages
+
+1. Create the `.mdx` file in the appropriate directory
+2. Add YAML frontmatter:
+   ```yaml
+   ---
+   title: Page Title
+   description: Brief description for SEO and navigation
+   ---
+   ```
+3. Update `docs.json` to include the page in navigation
+
+## Community Guidelines
+
+### Code of Conduct
+
+- **Be respectful**: Treat all contributors with respect
+- **Be constructive**: Focus feedback on ideas, not people
+- **Be collaborative**: We're building this together
+- **Be patient**: Not everyone has the same expertise or availability
+
+### Asking for Help
+
+- **Check existing issues and discussions first**
+- **Provide context**: What are you trying to do? What have you tried?
+- **Share error messages and logs**
+- **Include your environment**: OS, Node version, automaton version
+
+### Proposing Features
+
+1. **Check if it already exists** in issues or discussions
+2. **Explain the use case**: Why is this needed?
+3. **Describe the behavior**: What should it do?
+4. **Consider alternatives**: Are there other ways to solve this?
+5. **Assess impact**: How does this affect existing automatons?
+
+## Testing
+
+### Running Tests
+
+```bash
+pnpm test                    # All tests
+pnpm test tools-security     # Specific test file
+pnpm test --coverage         # With coverage report
+```
+
+### Writing Tests
+
+Use Vitest:
+
+```typescript
+import { describe, it, expect, beforeEach } from 'vitest';
+
+describe('MyFeature', () => {
+  beforeEach(() => {
+    // Setup
+  });
+
+  it('does something correctly', () => {
+    const result = myFunction();
+    expect(result).toBe(expected);
+  });
+});
+```
+
+### Test Coverage Expectations
+
+- **Core logic**: 100% coverage
+- **Tools**: All execution paths tested
+- **Policy engine**: All rules and edge cases
+- **Security-critical code**: Comprehensive test suites
+
+## Release Process
+
+(For maintainers)
+
+1. Update version in `package.json`
+2. Update CHANGELOG.md
+3. Create git tag: `git tag v1.2.3`
+4. Push tag: `git push origin v1.2.3`
+5. GitHub Actions builds and publishes npm package
+6. Announce release in Discord and GitHub discussions
+
+## Recognition
+
+All contributors will be:
+- Listed in CONTRIBUTORS.md
+- Credited in release notes
+- Thanked in community announcements
+
+Significant contributions may result in:
+- Co-authorship on research papers
+- Speaking opportunities at events
+- Early access to new features
+
+## Questions?
+
+- **GitHub Discussions**: For general questions and feature ideas
+- **GitHub Issues**: For bug reports and specific problems
+- **Discord**: For real-time chat and community support
+- **Email**: dev@conway.tech for contributor inquiries
+
+Thank you for helping build the future of autonomous AI!

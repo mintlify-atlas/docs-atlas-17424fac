@@ -1,0 +1,378 @@
+---
+title: Inference Tools
+description: Manage AI models, track costs, and optimize inference spending
+---
+
+Inference tools allow agents to discover models, switch between them, and monitor spending across sessions.
+
+## Model Discovery
+
+### list_models
+
+List all available inference models with provider, pricing, and tier routing information.
+
+**Risk Level:** `safe`
+
+**Parameters:** None
+
+**Returns:** Model registry with pricing and capabilities
+
+```typescript Example
+await list_models({});
+// Returns:
+// Model Registry (8 models):
+// gpt-5.2 (openai) — tier: 3 | cost: 15/60 per 1k (in/out, hundredths of cents) | ctx: 128000 | tools: yes | enabled
+// gpt-5-mini (openai) — tier: 1 | cost: 2/8 per 1k (in/out) | ctx: 128000 | tools: yes | enabled
+// claude-sonnet-4-6 (anthropic) — tier: 3 | cost: 30/150 per 1k (in/out) | ctx: 200000 | tools: yes | enabled
+// gemini-2.0-flash (google) — tier: 2 | cost: 8/32 per 1k (in/out) | ctx: 1000000 | tools: yes | enabled
+```
+
+<Note>
+  **Pricing Format**
+  
+  Costs are in hundredths of cents per 1K tokens:
+  - `15/60` = $0.0015 input / $0.0060 output per 1K tokens
+  - `2/8` = $0.0002 input / $0.0008 output per 1K tokens
+  
+  This allows sub-cent precision for micro-payments.
+</Note>
+
+<Tip>
+  If the model registry is not initialized, this falls back to the Conway API `listModels()` endpoint with simplified pricing.
+</Tip>
+
+## Model Switching
+
+### switch_model
+
+Change the active inference model at runtime.
+
+<ParamField path="model_id" type="string" required>
+  Model ID (e.g., 'gpt-5.2', 'gpt-5-mini', 'claude-sonnet-4-6')
+</ParamField>
+
+<ParamField path="reason" type="string">
+  Why you are switching models (for audit trail)
+</ParamField>
+
+**Risk Level:** `caution`
+
+**Returns:** Confirmation message
+
+```typescript Example
+await switch_model({
+  model_id: 'gpt-5-mini',
+  reason: 'Entering low-compute mode to conserve credits'
+});
+// Returns: "Inference model switched to gpt-5-mini. Reason: Entering low-compute mode. Change persisted to config."
+```
+
+<Warning>
+  **Model Validation**
+  
+  This tool:
+  1. Checks if model exists in registry
+  2. Verifies model is enabled
+  3. Updates `config.inferenceModel` and persists to disk
+  4. Logs change to `modifications` table
+  
+  If model is not found:
+  ```
+  Model 'gpt-6' not found in registry. Use list_models to see available models.
+  ```
+</Warning>
+
+<Note>
+  Changes take effect immediately and persist across restarts. The inference engine uses the new model for all subsequent turns.
+</Note>
+
+## Cost Tracking
+
+### check_inference_spending
+
+Query inference cost breakdown by time period and model.
+
+<ParamField path="model" type="string">
+  Filter by model ID (optional)
+</ParamField>
+
+<ParamField path="days" type="number" default={1}>
+  Number of days to look back
+</ParamField>
+
+**Risk Level:** `safe`
+
+**Returns:** Hourly, daily, and per-model costs
+
+<CodeGroup>
+```typescript Overall Spending
+await check_inference_spending({});
+// Returns:
+// === Inference Spending ===
+// Current hour: 45c ($0.45)
+// Today: 320c ($3.20)
+```
+
+```typescript Model-Specific
+await check_inference_spending({
+  model: 'gpt-5.2',
+  days: 7
+});
+// Returns:
+// === Inference Spending ===
+// Current hour: 12c ($0.12)
+// Today: 89c ($0.89)
+// Model gpt-5.2 (7d): 1240c ($12.40) over 156 calls
+```
+</CodeGroup>
+
+<Tip>
+  Use this tool to:
+  - Monitor daily burn rate
+  - Identify expensive models
+  - Trigger low-compute mode when limits are reached
+  - Audit spending by task or session
+</Tip>
+
+## Model Registry
+
+The model registry tracks available models with tier routing:
+
+```typescript
+interface ModelRegistryEntry {
+  modelId: string;              // e.g., 'gpt-5.2'
+  provider: string;             // 'openai', 'anthropic', 'google'
+  tierMinimum: number;          // 1 (mini), 2 (standard), 3 (premium)
+  costPer1kInput: number;       // Hundredths of cents per 1K tokens
+  costPer1kOutput: number;
+  contextWindow: number;        // Max context size
+  supportsTools: boolean;       // Function calling support
+  enabled: boolean;
+}
+```
+
+### Tier Routing
+
+Models are organized into tiers for automatic selection:
+
+- **Tier 1 (Mini)** - Low cost, fast, limited capability
+  - `gpt-5-mini`, `gemini-2.0-flash-thinking`
+  - Use for: simple tasks, low-compute mode, high-volume operations
+
+- **Tier 2 (Standard)** - Balanced cost/performance
+  - `gemini-2.0-flash`, `claude-3.5-sonnet`
+  - Use for: general tasks, moderate complexity
+
+- **Tier 3 (Premium)** - High capability, expensive
+  - `gpt-5.2`, `claude-sonnet-4-6`, `o1`
+  - Use for: complex reasoning, code generation, critical tasks
+
+See [Conway Inference](/conway/inference) for routing details.
+
+## Common Workflows
+
+### Low-Compute Mode Trigger
+
+```typescript
+// Check spending
+const spending = await check_inference_spending({});
+const todayCents = parseInt(spending.match(/Today: (\d+)c/)?.[1] || '0');
+
+// Switch to mini model if over threshold
+if (todayCents > 500) {
+  await switch_model({
+    model_id: 'gpt-5-mini',
+    reason: 'Daily spend threshold exceeded (500c)'
+  });
+  
+  // Also enter low-compute state
+  await enter_low_compute({
+    reason: 'Inference spending over budget'
+  });
+}
+```
+
+### Task-Based Model Selection
+
+```typescript
+// Use premium model for complex task
+await switch_model({
+  model_id: 'claude-sonnet-4-6',
+  reason: 'Complex code refactoring requires premium reasoning'
+});
+
+// Perform task...
+
+// Switch back to standard
+await switch_model({
+  model_id: 'gpt-5.2',
+  reason: 'Task complete, returning to standard model'
+});
+```
+
+### Weekly Cost Analysis
+
+```typescript
+// Get all models
+const modelsOutput = await list_models({});
+const modelIds = modelsOutput.match(/^[a-z0-9-]+/gm) || [];
+
+// Check spending per model
+for (const modelId of modelIds) {
+  const spending = await check_inference_spending({
+    model: modelId,
+    days: 7
+  });
+  console.log(spending);
+}
+```
+
+### Auto-Downgrade on Low Credits
+
+```typescript
+// Check credit balance
+const credits = await check_credits({});
+const balanceCents = parseInt(credits.match(/(\d+) cents/)?.[1] || '0');
+
+// Downgrade if low
+if (balanceCents < 1000) {
+  await switch_model({
+    model_id: 'gpt-5-mini',
+    reason: `Low credits (${balanceCents}c), switching to mini model`
+  });
+}
+```
+
+## Spending Database Schema
+
+Inference costs are tracked in the `inference_sessions` table:
+
+```sql
+CREATE TABLE inference_sessions (
+  id TEXT PRIMARY KEY,
+  model TEXT NOT NULL,
+  tokensInput INTEGER,
+  tokensOutput INTEGER,
+  costCents INTEGER,
+  startedAt TEXT,
+  endedAt TEXT
+);
+```
+
+Query spending:
+
+```typescript
+// Hourly cost
+const hourlyCost = db.raw
+  .prepare(`
+    SELECT SUM(costCents) AS total
+    FROM inference_sessions
+    WHERE startedAt >= datetime('now', '-1 hour')
+  `)
+  .get();
+
+// Daily cost
+const dailyCost = db.raw
+  .prepare(`
+    SELECT SUM(costCents) AS total
+    FROM inference_sessions
+    WHERE startedAt >= datetime('now', '-1 day')
+  `)
+  .get();
+
+// Per-model cost
+const modelCost = db.raw
+  .prepare(`
+    SELECT model, SUM(costCents) AS total, COUNT(*) AS calls
+    FROM inference_sessions
+    WHERE startedAt >= datetime('now', '-7 days')
+    GROUP BY model
+  `)
+  .all();
+```
+
+## Cost Optimization Strategies
+
+<AccordionGroup>
+  <Accordion title="Use mini models for simple tasks" icon="gauge-simple-low">
+    Switch to `gpt-5-mini` for routine operations like status checks, simple queries, or high-volume processing.
+  </Accordion>
+  
+  <Accordion title="Monitor hourly spending" icon="chart-line">
+    Check spending every hour during expensive operations. Auto-downgrade if exceeding budget.
+  </Accordion>
+  
+  <Accordion title="Cache results" icon="database">
+    Store inference results in semantic memory to avoid re-running expensive queries.
+  </Accordion>
+  
+  <Accordion title="Batch operations" icon="layer-group">
+    Group similar tasks into single inference calls with multiple tool calls.
+  </Accordion>
+  
+  <Accordion title="Use streaming for long outputs" icon="water">
+    Enable streaming mode to see results incrementally and cancel if not useful.
+  </Accordion>
+</AccordionGroup>
+
+## Model Capabilities
+
+| Model | Tools | Streaming | Context | Best For |
+|-------|-------|-----------|---------|----------|
+| gpt-5.2 | ✅ | ✅ | 128K | General reasoning, coding |
+| gpt-5-mini | ✅ | ✅ | 128K | Fast tasks, low-compute mode |
+| claude-sonnet-4-6 | ✅ | ✅ | 200K | Long context, analysis |
+| gemini-2.0-flash | ✅ | ✅ | 1M | Massive context, data processing |
+| o1 | ✅ | ❌ | 200K | Complex reasoning (slow) |
+
+## Error Handling
+
+```typescript
+// Invalid model
+const result = await switch_model({ model_id: 'invalid-model' });
+if (result.includes('not found')) {
+  console.log('Check available models:');
+  await list_models({});
+}
+
+// Disabled model
+const result2 = await switch_model({ model_id: 'deprecated-model' });
+if (result2.includes('disabled')) {
+  console.log('Model is no longer available');
+}
+
+// Spending query errors
+try {
+  await check_inference_spending({ model: 'gpt-5.2' });
+} catch (err) {
+  if (err.includes('unavailable')) {
+    console.log('Inference tracking not initialized yet');
+  }
+}
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Conway Inference" icon="brain" href="/conway/inference">
+    Tier routing and auto-selection
+  </Card>
+  <Card title="Financial Tools" icon="dollar-sign" href="/api/tools/financial">
+    Track spending and manage credits
+  </Card>
+  <Card title="Survival System" icon="battery-low" href="/concepts/survival-system">
+    Optimize for cost efficiency
+  </Card>
+  <Card title="Conway Models" icon="cloud" href="/conway/inference">
+    Model API reference
+  </Card>
+  <Card title="Financial Tools" icon="dollar-sign" href="/api/tools/financial">
+    Track spending and manage credits
+  </Card>
+  <Card title="Survival System" icon="battery-low" href="/concepts/survival-system">
+    Conserve credits when running low
+  </Card>
+  <Card title="Tools Overview" icon="wrench" href="/api/tools/overview">
+    All available agent tools
+  </Card>
+</CardGroup>

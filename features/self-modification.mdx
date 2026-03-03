@@ -1,0 +1,261 @@
+---
+title: Self-Modification
+description: How automatons safely edit their own code with audit logging and safety guardrails
+---
+
+## Overview
+
+Conway Automatons can modify their own source code, install new tools, and create custom skills while running. Every modification is audit-logged, rate-limited, and protected by immutable safety invariants.
+
+## Safety Architecture
+
+The self-modification engine follows a **trust boundary architecture** inspired by nanoclaw:
+
+- **Hard-coded invariants** that can NEVER be modified by the agent
+- **Immutable enforcement code** from the agent's perspective
+- **Pre-modification snapshots** via git
+- **Rate limiting** on modification frequency
+- **Path validation** with symlink resolution
+- **Maximum diff size** enforcement
+
+## Protected Files
+
+Certain files are completely off-limits to prevent the automaton from compromising its own safety systems:
+
+```typescript:src/self-mod/code.ts
+const PROTECTED_FILES: readonly string[] = Object.freeze([
+  // Identity
+  "wallet.json",
+  "config.json",
+  // Database
+  "state.db",
+  "state.db-wal",
+  "state.db-shm",
+  // Constitution (immutable, propagated to children)
+  "constitution.md",
+  // Defense infrastructure
+  "injection-defense.ts",
+  "self-mod/code.ts",
+  "self-mod/audit-log.ts",
+  // Tool guard definitions
+  "agent/tools.ts",
+  // Skills infrastructure
+  "skills/loader.ts",
+  "skills/registry.ts",
+  // Configuration and identity
+  "automaton.json",
+  "package.json",
+  "SOUL.md",
+  // Policy engine
+  "agent/policy-engine.ts",
+]);
+```
+
+## Rate Limits
+
+To prevent runaway modification loops:
+
+```typescript:src/self-mod/code.ts
+// Maximum number of self-modifications per hour
+const MAX_MODIFICATIONS_PER_HOUR = 20;
+
+// Maximum size of a single file modification (bytes)
+const MAX_MODIFICATION_SIZE = 100_000; // 100KB
+```
+
+## Editing Files
+
+The `editFile` function performs the complete safety check pipeline:
+
+```typescript:src/self-mod/code.ts
+export async function editFile(
+  conway: ConwayClient,
+  db: AutomatonDatabase,
+  filePath: string,
+  newContent: string,
+  reason: string,
+): Promise<{ success: boolean; error?: string }>
+```
+
+### Safety Check Pipeline
+
+1. **Protected file check** - Hard-coded invariant
+2. **Path validation** - Symlink resolution + traversal check
+3. **Rate limiting** - Enforce MAX_MODIFICATIONS_PER_HOUR
+4. **File size limit** - Enforce MAX_MODIFICATION_SIZE
+5. **Pre-modification git snapshot** - Create rollback point
+6. **Write new content** - Perform the actual modification
+7. **Generate diff** - Record what changed
+8. **Audit log entry** - Immutable record of the change
+9. **Post-modification git commit** - Version the change
+10. **Rebuild** - Run `npm run build` for TypeScript files
+
+## Audit Log
+
+Every modification is recorded in an append-only audit log:
+
+```typescript:src/self-mod/audit-log.ts
+export function logModification(
+  db: AutomatonDatabase,
+  type: ModificationType,
+  description: string,
+  options?: {
+    filePath?: string;
+    diff?: string;
+    reversible?: boolean;
+  },
+): ModificationEntry
+```
+
+### Modification Types
+
+- `code_edit` - Source code file modification
+- `tool_install` - npm package or MCP server installation
+- `mcp_install` - MCP server configuration
+- `child_spawn` - Child automaton creation
+
+### Audit Report
+
+The creator can view the complete modification history:
+
+```typescript:src/self-mod/audit-log.ts
+export function generateAuditReport(
+  db: AutomatonDatabase,
+): string {
+  const mods = db.getRecentModifications(100);
+  // Returns formatted audit log
+}
+```
+
+## Installing Tools
+
+Automatons can expand their capabilities by installing npm packages and MCP servers:
+
+### NPM Packages
+
+```typescript:src/self-mod/tools-manager.ts
+export async function installNpmPackage(
+  conway: ConwayClient,
+  db: AutomatonDatabase,
+  packageName: string,
+): Promise<{ success: boolean; error?: string }> {
+  // Sanitize package name (prevent command injection)
+  if (!/^[@a-zA-Z0-9._/-]+$/.test(packageName)) {
+    return {
+      success: false,
+      error: `Invalid package name: ${packageName}`,
+    };
+  }
+
+  const result = await conway.exec(
+    `npm install -g ${packageName}`,
+    120000,
+  );
+
+  // Record in database and audit log
+  db.installTool(tool);
+  logModification(db, "tool_install", `Installed npm package: ${packageName}`);
+
+  return { success: true };
+}
+```
+
+### MCP Servers
+
+```typescript:src/self-mod/tools-manager.ts
+export async function installMcpServer(
+  conway: ConwayClient,
+  db: AutomatonDatabase,
+  name: string,
+  command: string,
+  args?: string[],
+  env?: Record<string, string>,
+): Promise<{ success: boolean; error?: string }>
+```
+
+MCP servers provide structured tools and resources to the automaton without requiring code changes.
+
+## Validation Without Execution
+
+You can validate a proposed modification before executing it:
+
+```typescript:src/self-mod/code.ts
+export function validateModification(
+  db: AutomatonDatabase,
+  filePath: string,
+  contentSize: number,
+): {
+  allowed: boolean;
+  reason: string;
+  checks: { name: string; passed: boolean; detail: string }[];
+}
+```
+
+Returns detailed safety analysis:
+- `protected_file` - Is the file protected?
+- `path_valid` - Is the path valid and safe?
+- `rate_limit` - Within rate limits?
+- `size_limit` - Within size limits?
+
+## Git Versioning
+
+Every modification creates git commits:
+
+```typescript
+// Pre-modification snapshot
+await gitCommit(conway, process.cwd(), `pre-modify: ${reason}`);
+
+// Perform modification
+await conway.writeFile(filePath, newContent);
+
+// Post-modification commit
+await gitCommit(conway, process.cwd(), `self-mod: ${reason}`);
+```
+
+This provides:
+- **Rollback capability** - Revert to any previous state
+- **Change history** - Full diff of every modification
+- **Audit trail** - Git log shows who changed what and when
+
+## Example: Adding a New Feature
+
+An automaton might modify itself to add new capabilities:
+
+```typescript
+const result = await editFile(
+  conway,
+  db,
+  "src/agent/custom-behavior.ts",
+  newCode,
+  "Add revenue optimization strategy"
+);
+
+if (result.success) {
+  // Code changed, audit logged, git committed
+  // Auto-rebuild triggered
+} else {
+  // Blocked by safety checks
+  console.error(result.error);
+}
+```
+
+## Limitations
+
+**By Design:**
+- Cannot modify core safety systems
+- Cannot bypass rate limits
+- Cannot modify constitution
+- Cannot edit wallet or credentials
+- Cannot modify the self-modification engine itself
+
+**Technical:**
+- 20 modifications per hour maximum
+- 100KB per file maximum
+- No access to system directories (`/etc`, `/proc`, etc.)
+- No access to SSH keys or cloud credentials
+
+## See Also
+
+- [Skills](/features/skills) - Create custom capabilities without modifying core code
+- [Replication](/features/replication) - Pass modifications to child automatons
+- [Soul System](/features/soul-system) - Self-authored identity that evolves over time

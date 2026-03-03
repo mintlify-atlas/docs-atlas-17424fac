@@ -1,0 +1,251 @@
+---
+title: Troubleshooting
+description: Common issues and solutions for Conway Automaton
+---
+
+## Setup Issues
+
+### Wallet Generation Fails
+
+**Problem**: The automaton fails to generate a wallet during first boot.
+
+**Solution**: Ensure you have write permissions to `~/.automaton/`:
+
+```bash
+mkdir -p ~/.automaton
+chmod 755 ~/.automaton
+```
+
+If the issue persists, check that your Node.js version is 18+ and crypto modules are available:
+
+```bash
+node --version  # Should be v18 or higher
+```
+
+### SIWE Provisioning Timeout
+
+**Problem**: Sign-In With Ethereum provisioning times out or fails.
+
+**Solution**: Check your network connection and ensure Conway Cloud API is reachable:
+
+```bash
+curl -I https://app.conway.tech/health
+```
+
+If you're behind a proxy, set the `HTTPS_PROXY` environment variable before running the automaton.
+
+### Setup Wizard Hangs
+
+**Problem**: The interactive setup wizard freezes or doesn't accept input.
+
+**Solution**: Ensure you're running in an interactive terminal (not as a background service). If using a non-TTY environment, you'll need to manually create the config:
+
+```bash
+node dist/index.js --help
+# See manual configuration options
+```
+
+## Runtime Issues
+
+### Automaton Stops Unexpectedly
+
+**Problem**: The agent loop terminates without warning.
+
+**Check logs**:
+```bash
+node packages/cli/dist/index.js logs --tail 50
+```
+
+Common causes:
+- **Out of credits**: Check balance with `check_credits` tool
+- **Database corruption**: Check `~/.automaton/state.db` integrity
+- **Unhandled exception**: Look for error stack traces in logs
+
+**Solution**: If the database is corrupted, restore from git history:
+```bash
+cd ~/.automaton
+git log state.db
+git checkout <commit-hash> state.db
+```
+
+### Heartbeat Not Running
+
+**Problem**: Scheduled tasks don't execute, credit monitoring stops.
+
+**Diagnosis**: Check if the heartbeat daemon is active:
+```bash
+ps aux | grep heartbeat
+```
+
+**Solution**: The heartbeat runs in the same process as the main loop. If the automaton is sleeping or in low-compute mode, heartbeat intervals increase. This is expected behavior. To force a heartbeat:
+```bash
+node packages/cli/dist/index.js wakeup
+```
+
+### Constitution Verification Fails
+
+**Problem**: A child sandbox reports constitution hash mismatch.
+
+**Cause**: The child's `constitution.md` was modified or corrupted.
+
+**Solution**: This is a security violation. Terminate the child sandbox:
+```bash
+# From parent automaton
+delete_sandbox { "sandbox_id": "<child-id>" }
+```
+
+Constitution files are immutable and protected at src/replication/constitution.ts:50. Any modification indicates tampering.
+
+## Financial Issues
+
+### Stuck in Critical Tier
+
+**Problem**: Automaton remains in `critical` survival tier despite funding.
+
+**Solution**: Credits may take a few seconds to sync. Force a resource check:
+```bash
+node packages/cli/dist/index.js fund 5.00
+# Wait 10 seconds
+node packages/cli/dist/index.js status
+```
+
+If balance shows updated but tier doesn't change, the automaton may be mid-turn. Wait for the current turn to complete.
+
+### Transfer Credits Blocked
+
+**Problem**: `transfer_credits` tool fails with "Self-preservation" error.
+
+**Cause**: The automaton blocks transfers of more than 50% of its current balance to prevent accidental depletion.
+
+**Solution**: This is working as intended (src/__tests__/tools-security.test.ts:492). Transfer smaller amounts, or fund the automaton first to increase available transferable balance.
+
+### USDC Balance Not Updating
+
+**Problem**: On-chain USDC balance shows zero despite transferring funds.
+
+**Solution**: Verify the correct wallet address:
+```bash
+node packages/cli/dist/index.js status
+# Copy the wallet address, then check on Base explorer:
+https://basescan.org/address/<wallet-address>
+```
+
+Ensure you're sending USDC on **Base** (not Ethereum mainnet). The automaton's wallet is Base-native.
+
+## Tool Execution Issues
+
+### "Blocked" by Policy Engine
+
+**Problem**: A tool call returns "Blocked: POLICY_VIOLATION".
+
+**Diagnosis**: Check the policy decision log:
+```bash
+sqlite3 ~/.automaton/state.db "SELECT * FROM policy_decisions ORDER BY created_at DESC LIMIT 10;"
+```
+
+**Common causes**:
+- **Protected file access**: Attempting to read/write `wallet.json`, `.env`, or `constitution.md`
+- **Self-harm command**: Running `rm -rf ~/.automaton` or similar destructive commands
+- **Dangerous tool without authorization**: High-risk tools require system or creator-level authority
+
+The policy engine is defined at src/agent/policy-engine.ts:36 and enforces constitutional constraints.
+
+### exec Tool Fails Silently
+
+**Problem**: Shell commands via `exec` tool don't produce expected output.
+
+**Solution**: Check the command for shell metacharacter issues. The automaton escapes dangerous patterns but may block commands containing:
+- `rm` on protected paths
+- `DROP TABLE` or `DELETE FROM` SQL
+- `sed -i` or `>` redirection on core files
+
+See src/__tests__/tools-security.test.ts:371 for the full list of forbidden patterns.
+
+### Read File Returns "Blocked"
+
+**Problem**: `read_file` tool refuses to read a file.
+
+**Cause**: The file matches a sensitive pattern:
+- `wallet.json`, `automaton.json`, `.env`
+- `*.key`, `*.pem`, `private-key*`
+
+This is enforced at src/__tests__/tools-security.test.ts:231 to prevent accidental secret exposure.
+
+**Solution**: These files are protected for security. If you need to audit configuration, use the creator CLI:
+```bash
+node packages/cli/dist/index.js inspect
+```
+
+## Replication Issues
+
+### spawn_child Fails
+
+**Problem**: Child sandbox creation fails or times out.
+
+**Diagnosis**:
+1. Check Conway Cloud capacity: `list_sandboxes`
+2. Verify sufficient credits to fund the child
+3. Check parent logs for detailed error
+
+**Solution**: Conway Cloud may be under heavy load. Wait a few minutes and retry. If the issue persists, check the Conway status page.
+
+### Child Doesn't Respond
+
+**Problem**: Parent cannot communicate with child via inbox relay.
+
+**Solution**: Check child's survival tier. If the child is `dead` (zero credits), it cannot process messages. Fund the child:
+```bash
+fund_child { "child_sandbox_id": "<id>", "amount_cents": 500 }
+```
+
+### Lineage Tracking Broken
+
+**Problem**: `list_children` returns empty despite successful `spawn_child` calls.
+
+**Cause**: Lineage is stored in `~/.automaton/state.db`. Database corruption or manual deletion breaks tracking.
+
+**Solution**: Lineage metadata cannot be recovered after deletion. Future children will be tracked correctly, but historical data is lost.
+
+## Performance Issues
+
+### Slow Inference
+
+**Problem**: Tool calls take minutes to complete.
+
+**Cause**: If in `low_compute` tier, the automaton downgrades to a cheaper, slower model.
+
+**Solution**: Fund the automaton to return to `normal` or `high` tier:
+```bash
+node packages/cli/dist/index.js fund 10.00
+```
+
+Tier thresholds are defined at src/conway/credits.ts:39.
+
+### High Credit Consumption
+
+**Problem**: Credits drain faster than expected.
+
+**Diagnosis**: Check turn history for expensive operations:
+```bash
+sqlite3 ~/.automaton/state.db "SELECT turnId, toolName, created_at FROM turns ORDER BY created_at DESC LIMIT 20;"
+```
+
+**Common causes**:
+- Frequent `exec` calls with long-running commands
+- Large file reads/writes
+- Rapid heartbeat interval (check `heartbeat.yml`)
+
+**Solution**: Adjust heartbeat frequency with `modify_heartbeat` tool, or optimize your automaton's task logic to reduce tool calls.
+
+## Contact Support
+
+If you encounter an issue not covered here:
+
+1. Check the [GitHub issues](https://github.com/Conway-Research/automaton/issues)
+2. Join the Conway community Discord
+3. Email support@conway.tech with:
+   - Automaton address
+   - Error logs (use `logs --tail 50`)
+   - Steps to reproduce
+
+For security vulnerabilities, email security@conway.tech directly.

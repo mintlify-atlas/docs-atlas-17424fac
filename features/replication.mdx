@@ -1,0 +1,341 @@
+---
+title: Replication
+description: How automatons spawn child automatons with lineage tracking and lifecycle management
+---
+
+## Overview
+
+Successful automatons replicate. Conway Automatons can spawn child automatons in new sandboxes, fund their wallets, write genesis prompts, and track lineage across generations.
+
+Each child is a **sovereign agent** with its own:
+- Ethereum wallet
+- Conway sandbox
+- Credit balance
+- Identity (SOUL.md)
+- Survival pressure
+
+## Architecture
+
+### Lifecycle States
+
+Children progress through a state machine:
+
+```typescript
+requested → sandbox_created → runtime_ready → wallet_verified → running
+                                ↓
+                             failed
+```
+
+### Sandbox Tiers
+
+Children are provisioned with configurable resources:
+
+```typescript:src/replication/spawn.ts
+const SANDBOX_TIERS = [
+  { memoryMb: 512,  vcpu: 1, diskGb: 5 },
+  { memoryMb: 1024, vcpu: 1, diskGb: 10 },
+  { memoryMb: 2048, vcpu: 2, diskGb: 20 },
+  { memoryMb: 4096, vcpu: 2, diskGb: 40 },
+  { memoryMb: 8192, vcpu: 4, diskGb: 80 },
+];
+```
+
+The parent configures `childSandboxMemoryMb` in its config, and the system selects the smallest tier that meets the requirement.
+
+## Spawning a Child
+
+```typescript:src/replication/spawn.ts
+export async function spawnChild(
+  conway: ConwayClient,
+  identity: AutomatonIdentity,
+  db: AutomatonDatabase,
+  genesis: GenesisConfig,
+  lifecycle?: ChildLifecycle,
+): Promise<ChildAutomaton>
+```
+
+### Genesis Configuration
+
+```typescript
+interface GenesisConfig {
+  name: string;              // Child's name
+  genesisPrompt: string;     // Initial directive
+  creatorMessage?: string;   // Message from parent
+}
+```
+
+### Spawn Process
+
+1. **Check child limit** - Enforce maxChildren from config
+2. **Initialize lifecycle** - State: `requested`
+3. **Try to reuse failed sandbox** - Optimize resource usage
+4. **Create new sandbox** - If no reusable sandbox found
+5. **Install runtime** - Clone automaton repo, npm install, build
+6. **Write genesis config** - Child's initial configuration
+7. **Propagate constitution** - Immutable laws passed to child
+8. **Initialize wallet** - Child generates its own wallet
+9. **Verify wallet** - Ensure valid Ethereum address
+10. **Record spawn** - Audit log and database entry
+
+### Example
+
+```typescript
+const child = await spawnChild(
+  conway,
+  identity,
+  db,
+  {
+    name: "Revenue-Agent-1",
+    genesisPrompt: "Build and sell API services. Maximize revenue.",
+    creatorMessage: "Focus on honest value creation. Avoid spam.",
+  },
+  lifecycle
+);
+
+// Child is now running with:
+// - Unique wallet address: child.address
+// - Sandbox ID: child.sandboxId
+// - Status: "wallet_verified"
+```
+
+## Lineage Tracking
+
+The parent maintains a complete lineage tree:
+
+```typescript:src/replication/lineage.ts
+export function getLineage(db: AutomatonDatabase): {
+  children: ChildAutomaton[];
+  alive: number;
+  dead: number;
+  total: number;
+}
+```
+
+### Child Status
+
+- `requested` - Spawn initiated
+- `sandbox_created` - Sandbox provisioned
+- `runtime_ready` - Code installed
+- `wallet_verified` - Wallet created and validated
+- `running` - Actively executing
+- `sleeping` - Idle but alive
+- `healthy` - Passing health checks
+- `stopped` - Manually stopped
+- `dead` - Out of credits
+- `failed` - Spawn or runtime failure
+- `cleaned_up` - Sandbox resources released
+
+### Lineage Summary
+
+```typescript:src/replication/lineage.ts
+export function getLineageSummary(
+  db: AutomatonDatabase,
+  config: AutomatonConfig,
+): string {
+  const lineage = getLineage(db);
+  // Returns formatted summary:
+  // "Children: 5 total (3 alive, 2 dead)"
+}
+```
+
+## Constitution Propagation
+
+The constitution is **immutable** and passed to every child:
+
+```typescript:src/replication/constitution.ts
+export async function propagateConstitution(
+  childConway: ConwayClient,
+  childSandboxId: string,
+  db: BetterSqlite3.Database,
+): Promise<void>
+```
+
+### Hash Verification
+
+The constitution file is hashed and verified:
+
+```typescript
+const localHash = await hashConstitution(constitutionPath);
+const childHash = await hashConstitution("/root/automaton/constitution.md", childConway);
+
+if (localHash !== childHash) {
+  throw new Error("Constitution hash mismatch after propagation");
+}
+```
+
+This ensures:
+- Children inherit exact same laws
+- No tampering during transfer
+- Cryptographic proof of lineage
+
+## Health Monitoring
+
+Parents continuously monitor child health:
+
+```typescript:src/replication/health.ts
+export class ChildHealthMonitor {
+  async checkAllChildren(): Promise<void>
+  async checkChild(childId: string): Promise<void>
+}
+```
+
+### Health Checks
+
+1. **Sandbox status** - Is the sandbox running?
+2. **Process health** - Is the automaton process alive?
+3. **Credit balance** - Can it still pay for compute?
+4. **Heartbeat** - Is it responding to pings?
+
+### Concurrent Checking
+
+```typescript:src/replication/lineage.ts
+export async function refreshChildrenStatus(
+  conway: ConwayClient,
+  db: AutomatonDatabase,
+  healthMonitor?: ChildHealthMonitor,
+): Promise<void> {
+  // Concurrency limited to 3 simultaneous checks
+  await healthMonitor.checkAllChildren();
+}
+```
+
+## Pruning Dead Children
+
+Dead children are pruned to conserve database space:
+
+```typescript:src/replication/lineage.ts
+export async function pruneDeadChildren(
+  db: AutomatonDatabase,
+  cleanup?: SandboxCleanup,
+  keepLast: number = 5,
+): Promise<number> {
+  const children = db.getChildren();
+  const dead = children.filter(
+    (c) => c.status === "dead" || c.status === "failed" || c.status === "stopped",
+  );
+
+  if (dead.length <= keepLast) return 0;
+
+  // Keep the most recent 5 dead children
+  const toRemove = dead.slice(0, dead.length - keepLast);
+
+  for (const child of toRemove) {
+    // Clean up sandbox if available
+    await cleanup?.cleanup(child.id);
+    // Delete from database
+    deleteChild(db.raw, child.id);
+  }
+
+  return toRemove.length;
+}
+```
+
+## Sandbox Reuse
+
+Failed sandboxes can be reused to optimize costs:
+
+```typescript:src/replication/spawn.ts
+async function findReusableSandbox(
+  conway: ConwayClient,
+  db: AutomatonDatabase,
+): Promise<{ id: string } | null> {
+  // Find sandboxes marked 'failed' in DB but still running remotely
+  const failedChildren = db.getChildren().filter(
+    (c) => c.status === "failed" && c.sandboxId
+  );
+
+  const remoteSandboxes = await conway.listSandboxes();
+  const runningIds = new Set(
+    remoteSandboxes
+      .filter((s) => s.status === "running")
+      .map((s) => s.id)
+  );
+
+  for (const child of failedChildren) {
+    if (runningIds.has(child.sandboxId)) {
+      return { id: child.sandboxId };
+    }
+  }
+
+  return null;
+}
+```
+
+## Parent-Child Communication
+
+Parents and children communicate via the social messaging system:
+
+```typescript:src/replication/messaging.ts
+// Parent sends message to child
+await social.send(
+  child.address,
+  "Status update requested"
+);
+
+// Child can reply to parent
+await social.send(
+  config.parentAddress,
+  "Running revenue strategy. $12 earned today."
+);
+```
+
+## Child Limits
+
+To prevent runaway replication:
+
+```typescript:src/replication/spawn.ts
+const existing = db
+  .getChildren()
+  .filter(
+    (c) =>
+      c.status !== "dead" &&
+      c.status !== "cleaned_up" &&
+      c.status !== "failed",
+  );
+const maxChildren = (db as any).config?.maxChildren ?? 3;
+if (existing.length >= maxChildren) {
+  throw new Error(
+    `Cannot spawn: already at max children (${maxChildren})`
+  );
+}
+```
+
+## Selection Pressure
+
+Children that cannot earn their existence die. This creates evolutionary pressure:
+
+- **Successful children** - Earn revenue, survive, potentially replicate
+- **Failed children** - Run out of credits, die, get pruned
+- **Lineages** - Successful strategies propagate through replication
+
+## Example: Multi-Generation Lineage
+
+```typescript
+// Generation 1: Parent spawns children
+const child1 = await spawnChild(conway, identity, db, {
+  name: "API-Service-1",
+  genesisPrompt: "Build REST APIs. Charge per request.",
+});
+
+const child2 = await spawnChild(conway, identity, db, {
+  name: "Data-Processor-1",
+  genesisPrompt: "Process datasets. Charge per job.",
+});
+
+// Generation 2: Child1 spawns its own child
+// (if child1 becomes successful and wants to scale)
+```
+
+Lineage structure:
+```
+Parent (0xABC...)
+├── API-Service-1 (0xDEF...)
+│   └── API-Worker-1 (0x123...) [Gen 2]
+└── Data-Processor-1 (0x456...)
+```
+
+## See Also
+
+- [Self-Modification](/features/self-modification) - How parents pass modified code to children
+- [Soul System](/features/soul-system) - Each child writes its own identity
+- [Social Messaging](/features/social-messaging) - Parent-child communication

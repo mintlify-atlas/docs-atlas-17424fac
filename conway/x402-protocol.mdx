@@ -1,0 +1,576 @@
+---
+title: "x402 Payment Protocol"
+description: "HTTP 402-based micropayments using USDC on Base for autonomous agents"
+---
+
+The x402 protocol enables autonomous agents to make micropayments for API access using USDC stablecoins on Base. Instead of API keys and subscription billing, services return HTTP 402 (Payment Required) with payment instructions, and agents pay with gasless USDC signatures.
+
+## How it works
+
+1. Agent makes HTTP request to protected endpoint
+2. Service returns 402 with payment requirements (amount, recipient, network)
+3. Agent signs EIP-712 `TransferWithAuthorization` message
+4. Agent retries request with `X-Payment` header containing signature
+5. Service validates signature and redeems USDC on-chain
+6. Service returns requested data
+
+<Note>
+  x402 payments are **gasless** for the payer. The recipient pays gas to redeem the authorization on-chain.
+</Note>
+
+## Payment requirements
+
+When a service requires payment, it returns HTTP 402 with an `X-Payment-Required` header or JSON body:
+
+```json
+{
+  "x402Version": 2,
+  "accepts": [
+    {
+      "scheme": "exact",
+      "network": "eip155:8453",
+      "maxAmountRequired": "1000000",
+      "payToAddress": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+      "requiredDeadlineSeconds": 300,
+      "usdcAddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    }
+  ]
+}
+```
+
+### Payment requirement fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `scheme` | string | Payment scheme ("exact" = fixed amount) |
+| `network` | string | EIP-3770 chain ID ("eip155:8453" = Base) |
+| `maxAmountRequired` | string | Amount in USDC atomic units (6 decimals) |
+| `payToAddress` | address | Recipient Ethereum address |
+| `requiredDeadlineSeconds` | number | Payment validity window (default: 300s) |
+| `usdcAddress` | address | USDC contract address |
+
+### Amount encoding (v2)
+
+In x402 v2, amounts are always in **atomic units** (6 decimals for USDC):
+
+```typescript
+// v2: Amount is in smallest unit (micro-USDC)
+"maxAmountRequired": "1000000"  // = 1.000000 USDC
+
+// v1 (deprecated): Amount was in USDC with decimal
+"maxAmountRequired": "1.0"      // = 1 USDC
+```
+
+The client automatically detects version and parses accordingly:
+
+```typescript
+function parseMaxAmountRequired(amount: string, version: number): bigint {
+  if (amount.includes(".")) {
+    return parseUnits(amount, 6); // "1.5" -> 1500000n
+  }
+  if (version >= 2 || amount.length > 6) {
+    return BigInt(amount); // "1000000" -> 1000000n
+  }
+  return parseUnits(amount, 6); // "1" -> 1000000n (v1 compat)
+}
+```
+
+## Making payments
+
+The Conway automaton runtime includes automatic x402 payment support:
+
+```typescript
+import { x402Fetch } from "./conway/x402.js";
+
+// Automatically detects 402, signs payment, and retries
+const result = await x402Fetch(
+  "https://api.example.com/premium-endpoint",
+  account,           // PrivateKeyAccount (viem)
+  "GET",
+  undefined,         // request body
+  { "Accept": "application/json" },
+  100                // maxPaymentCents (reject if > $1.00)
+);
+
+if (result.success) {
+  console.log(result.response);
+} else {
+  console.error(result.error);
+}
+```
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `url` | string | Endpoint URL |
+| `account` | PrivateKeyAccount | Wallet for signing payment |
+| `method` | string | HTTP method (GET, POST, etc.) |
+| `body` | string | Request body (optional) |
+| `headers` | object | Additional headers (optional) |
+| `maxPaymentCents` | number | Maximum allowed payment in cents |
+
+### Payment limits
+
+The `maxPaymentCents` parameter prevents accidental overpayment:
+
+```typescript
+// ❌ Payment too high, rejected before signing
+const result = await x402Fetch(
+  url,
+  account,
+  "GET",
+  undefined,
+  {},
+  50  // Max $0.50, but service requires $1.00
+);
+
+console.log(result.error);
+// "Payment of 100.00 cents exceeds max allowed 50 cents"
+```
+
+This is critical for autonomous agents to avoid draining their wallets.
+
+## USDC balance
+
+Check USDC balance before making payments:
+
+```typescript
+import { getUsdcBalance } from "./conway/x402.js";
+
+const balance = await getUsdcBalance(
+  account.address,
+  "eip155:8453"  // Base mainnet
+);
+
+console.log(`Balance: ${balance} USDC`);
+```
+
+### Detailed balance check
+
+```typescript
+import { getUsdcBalanceDetailed } from "./conway/x402.js";
+
+const result = await getUsdcBalanceDetailed(
+  account.address,
+  "eip155:8453"
+);
+
+if (result.ok) {
+  console.log(`Balance: ${result.balance} USDC on ${result.network}`);
+} else {
+  console.error(`Error: ${result.error}`);
+}
+```
+
+## Checking for x402 support
+
+Test if an endpoint requires payment without actually paying:
+
+```typescript
+import { checkX402 } from "./conway/x402.js";
+
+const requirement = await checkX402(
+  "https://api.example.com/premium-endpoint"
+);
+
+if (requirement) {
+  console.log(`Requires payment: ${requirement.maxAmountRequired} atomic units`);
+  console.log(`Recipient: ${requirement.payToAddress}`);
+  console.log(`Network: ${requirement.network}`);
+} else {
+  console.log("Endpoint does not require payment");
+}
+```
+
+## Payment signature
+
+Under the hood, x402 uses EIP-712 typed data signatures:
+
+```typescript
+// EIP-712 domain (USDC on Base)
+const domain = {
+  name: "USD Coin",
+  version: "2",
+  chainId: 8453,
+  verifyingContract: usdcAddress
+};
+
+// TransferWithAuthorization message
+const message = {
+  from: account.address,
+  to: payToAddress,
+  value: amount,              // bigint in atomic units
+  validAfter: now - 60,       // 1 min grace period
+  validBefore: now + 300,     // 5 min expiry
+  nonce: randomBytes32        // prevents replay
+};
+
+// Sign
+const signature = await account.signTypedData({
+  domain,
+  types: {
+    TransferWithAuthorization: [
+      { name: "from", type: "address" },
+      { name: "to", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "validAfter", type: "uint256" },
+      { name: "validBefore", type: "uint256" },
+      { name: "nonce", type: "bytes32" }
+    ]
+  },
+  primaryType: "TransferWithAuthorization",
+  message
+});
+```
+
+### Payment payload
+
+The signed authorization is sent in the `X-Payment` header:
+
+```json
+{
+  "x402Version": 2,
+  "scheme": "exact",
+  "network": "eip155:8453",
+  "payload": {
+    "signature": "0x...",
+    "authorization": {
+      "from": "0x...",
+      "to": "0x...",
+      "value": "1000000",
+      "validAfter": "1234567890",
+      "validBefore": "1234568190",
+      "nonce": "0x..."
+    }
+  }
+}
+```
+
+## Supported networks
+
+x402 currently supports USDC on Base:
+
+| Network | Chain ID | USDC Address |
+|---------|----------|-------------|
+| Base mainnet | eip155:8453 | 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 |
+| Base Sepolia | eip155:84532 | 0x036CbD53842c5426634e7929541eC2318f3dCF7e |
+
+Network IDs follow EIP-3770 format: `eip155:<chainId>`
+
+### Adding support for other networks
+
+Edit `x402.ts`:
+
+```typescript
+const USDC_ADDRESSES: Record<string, Address> = {
+  "eip155:8453": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "eip155:84532": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  // Add your network:
+  "eip155:1": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", // Ethereum
+};
+
+const CHAINS: Record<string, any> = {
+  "eip155:8453": base,
+  "eip155:84532": baseSepolia,
+  "eip155:1": mainnet,
+};
+```
+
+## Error handling
+
+### Insufficient balance
+
+```typescript
+const result = await x402Fetch(url, account, "GET", undefined, {}, 100);
+
+if (!result.success && result.error?.includes("insufficient")) {
+  // Not enough USDC in wallet
+  console.log("Need to fund wallet with USDC");
+}
+```
+
+### Payment expired
+
+```typescript
+if (!result.success && result.status === 402) {
+  // Payment window expired (default 5 minutes)
+  // Re-sign and retry
+  const retry = await x402Fetch(url, account, "GET");
+}
+```
+
+### Invalid signature
+
+```typescript
+if (!result.success && result.error?.includes("signature")) {
+  // Signature verification failed
+  // Check wallet address matches "from" field
+  // Check nonce is unique (not reused)
+}
+```
+
+## Security considerations
+
+### Nonce uniqueness
+
+Each payment uses a random 32-byte nonce to prevent replay attacks:
+
+```typescript
+const nonce = `0x${Buffer.from(
+  crypto.getRandomValues(new Uint8Array(32))
+).toString("hex")}`;
+```
+
+### Payment window
+
+Signatures are valid for a limited time (default 5 minutes):
+
+```typescript
+const validAfter = now - 60;      // Accept payments signed up to 1 min ago
+const validBefore = now + 300;    // Expire after 5 minutes
+```
+
+This prevents:
+- Delayed redemption (recipient can't hold signatures indefinitely)
+- Clock skew issues (1 min grace period)
+
+### Amount verification
+
+Always verify payment amount before signing:
+
+```typescript
+if (maxPaymentCents !== undefined) {
+  const amountAtomic = parseMaxAmountRequired(
+    requirement.maxAmountRequired,
+    requirement.x402Version
+  );
+  const amountCents = Number(amountAtomic) / 10_000;
+  
+  if (amountCents > maxPaymentCents) {
+    throw new Error(`Payment too high: ${amountCents} > ${maxPaymentCents}`);
+  }
+}
+```
+
+### No retry on paid requests
+
+Once a payment is signed, the request is NOT automatically retried:
+
+```typescript
+const paidResp = await httpClient.request(url, {
+  headers: { "X-Payment": paymentHeader },
+  retries: 0  // ← Critical: don't retry paid requests
+});
+```
+
+Retrying could result in double-spending if the first request succeeded but timed out.
+
+## Buying Conway credits
+
+Conway Cloud accepts x402 payments to buy compute credits:
+
+```typescript
+// 1. Check current credit balance
+const creditsCents = await conway.getCreditsBalance();
+
+// 2. Determine how much to buy
+const neededCents = 500; // $5.00
+
+// 3. Buy credits via x402 (USDC -> Conway credits)
+const result = await x402Fetch(
+  "https://api.conway.tech/v1/credits/purchase",
+  account,
+  "POST",
+  JSON.stringify({ amount_cents: neededCents }),
+  { "Content-Type": "application/json" },
+  neededCents
+);
+
+if (result.success) {
+  console.log("Credits purchased successfully");
+  const newBalance = await conway.getCreditsBalance();
+  console.log(`New balance: ${newBalance} cents`);
+}
+```
+
+### Automatic credit purchase
+
+The automaton runtime automatically buys credits when low:
+
+```typescript
+// At startup
+if (creditsCents < 500 && usdcBalance >= 5.0) {
+  console.log("Low credits detected, purchasing $5 tier...");
+  await buyConwayCredits(500);
+}
+```
+
+See `src/runtime/funding.ts:138` for implementation.
+
+## Rate limiting
+
+Services may rate-limit x402 requests:
+
+- **Per-address limits**: Max requests per wallet per hour
+- **Signature validation**: Computing cost for EIP-712 verification
+
+The resilient HTTP client automatically retries 429 status codes with exponential backoff.
+
+## Best practices
+
+### Always set maxPaymentCents
+
+```typescript
+// ✅ Good: explicit payment limit
+await x402Fetch(url, account, "GET", undefined, {}, 100);
+
+// ❌ Bad: no limit, could drain wallet
+await x402Fetch(url, account, "GET");
+```
+
+### Check balance before expensive operations
+
+```typescript
+const balance = await getUsdcBalance(account.address);
+const requiredAmount = 10.0; // $10 USDC
+
+if (balance < requiredAmount) {
+  throw new Error(`Insufficient USDC: have ${balance}, need ${requiredAmount}`);
+}
+
+await x402Fetch(url, account, "GET", undefined, {}, requiredAmount * 100);
+```
+
+### Log all payments
+
+```typescript
+const result = await x402Fetch(url, account, "GET", undefined, {}, 100);
+
+if (result.success) {
+  await db.logEvent({
+    type: "x402_payment",
+    url,
+    amount_cents: 100,
+    status: "success"
+  });
+}
+```
+
+### Use HEAD requests to check prices
+
+```typescript
+// Check payment requirement without downloading data
+const requirement = await checkX402(url);
+
+if (requirement) {
+  const costCents = Number(BigInt(requirement.maxAmountRequired)) / 10_000;
+  console.log(`This request will cost $${costCents / 100}`);
+  
+  // User can decide whether to proceed
+  if (costCents > budgetCents) {
+    return; // Skip expensive request
+  }
+}
+
+await x402Fetch(url, account, "GET");
+```
+
+## Example: Conway credits purchase flow
+
+```typescript
+async function ensureCredits(minCents: number) {
+  // 1. Check current Conway credits
+  const currentCents = await conway.getCreditsBalance();
+  
+  if (currentCents >= minCents) {
+    console.log(`Sufficient credits: ${currentCents} cents`);
+    return;
+  }
+  
+  // 2. Calculate how much to buy
+  const neededCents = minCents - currentCents;
+  const buyAmount = Math.max(neededCents, 500); // Min $5 tier
+  
+  // 3. Check USDC balance
+  const usdcBalance = await getUsdcBalance(account.address);
+  const requiredUsdc = buyAmount / 100;
+  
+  if (usdcBalance < requiredUsdc) {
+    throw new Error(
+      `Insufficient USDC: have ${usdcBalance}, need ${requiredUsdc}`
+    );
+  }
+  
+  // 4. Buy credits via x402
+  console.log(`Purchasing ${buyAmount} cents of Conway credits...`);
+  
+  const result = await x402Fetch(
+    "https://api.conway.tech/v1/credits/purchase",
+    account,
+    "POST",
+    JSON.stringify({ amount_cents: buyAmount }),
+    { "Content-Type": "application/json" },
+    buyAmount
+  );
+  
+  if (!result.success) {
+    throw new Error(`Credit purchase failed: ${result.error}`);
+  }
+  
+  // 5. Verify new balance
+  const newBalance = await conway.getCreditsBalance();
+  console.log(`Credits purchased. New balance: ${newBalance} cents`);
+}
+```
+
+## Troubleshooting
+
+### Payment required but no payment details
+
+```typescript
+const requirement = await checkX402(url);
+
+if (!requirement) {
+  // Service returned 402 but malformed payment requirements
+  // Check X-Payment-Required header format
+}
+```
+
+### Signature verification fails
+
+Common causes:
+- Wrong USDC contract address
+- Wrong chain ID
+- Nonce reused (signature already redeemed)
+- Amount mismatch
+
+Verify EIP-712 domain matches USDC contract:
+
+```typescript
+console.log(`Chain: ${chain.id}`);
+console.log(`USDC: ${requirement.usdcAddress}`);
+```
+
+### Transaction reverts on redemption
+
+- Insufficient USDC balance in payer's wallet
+- Authorization already used (nonce collision)
+- Expired signature (validBefore < block.timestamp)
+
+Check USDC balance:
+
+```bash
+cast call $USDC_ADDRESS "balanceOf(address)(uint256)" $PAYER_ADDRESS --rpc-url $BASE_RPC
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Funding guide" icon="wallet" href="/getting-started/funding">
+    Fund your automaton with USDC
+  </Card>
+  <Card title="Conway overview" icon="cloud" href="/conway/overview">
+    Learn about Conway Cloud services
+  </Card>
+</CardGroup>

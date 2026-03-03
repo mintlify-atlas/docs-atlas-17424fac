@@ -1,0 +1,620 @@
+---
+title: Policy Engine
+description: Centralized policy evaluation for all tool calls before execution
+---
+
+The policy engine is a rule-based system that evaluates every tool call before execution. Rules are sorted by priority (lower = higher priority). Evaluation stops at the first `deny`.
+
+## Overview
+
+**Location:** `src/agent/policy-engine.ts`, `src/agent/policy-rules/`
+
+**Purpose:** Enforce security, safety, and resource constraints on all tool calls. Every `executeTool()` call passes through this engine before execution.
+
+**Core principle:** First deny wins. If any rule denies a tool call, the entire request is denied and the tool is not executed.
+
+## Architecture
+
+### PolicyEngine Class
+
+```typescript
+export class PolicyEngine {
+  private db: Database.Database;
+  private rules: PolicyRule[];
+
+  constructor(db: Database.Database, rules: PolicyRule[]) {
+    this.db = db;
+    this.rules = rules.slice().sort((a, b) => a.priority - b.priority);
+  }
+
+  evaluate(request: PolicyRequest): PolicyDecision {
+    const applicableRules = this.rules.filter((rule) =>
+      this.ruleApplies(rule, request),
+    );
+
+    let overallAction: PolicyAction = "allow";
+    let reasonCode = "ALLOWED";
+    let humanMessage = "All policy checks passed";
+
+    for (const rule of applicableRules) {
+      const result = rule.evaluate(request);
+
+      if (result === null) {
+        continue; // Rule does not apply
+      }
+
+      if (result.action === "deny") {
+        overallAction = "deny";
+        reasonCode = result.reasonCode;
+        humanMessage = result.humanMessage;
+        break; // First deny wins
+      }
+
+      if (result.action === "quarantine" && overallAction === "allow") {
+        overallAction = "quarantine";
+        reasonCode = result.reasonCode;
+        humanMessage = result.humanMessage;
+      }
+    }
+
+    return {
+      action: overallAction,
+      reasonCode,
+      humanMessage,
+      riskLevel: request.tool.riskLevel,
+      authorityLevel: PolicyEngine.deriveAuthorityLevel(request.turnContext.inputSource),
+      toolName: request.tool.name,
+      argsHash: createHash("sha256").update(JSON.stringify(request.args)).digest("hex"),
+      rulesEvaluated: [...],
+      rulesTriggered: [...],
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  logDecision(decision: PolicyDecision, turnId?: string): void {
+    insertPolicyDecision(this.db, { ...decision, turnId });
+  }
+}
+```
+
+### Policy Request
+
+```typescript
+interface PolicyRequest {
+  tool: ToolDefinition;              // Tool being called
+  args: Record<string, any>;         // Tool arguments
+  turnContext: {
+    turnId: string;
+    inputSource: InputSource;        // 'creator' | 'agent' | 'peer' | 'external' | 'system' | 'heartbeat'
+    sessionId: string;
+    agentState: AgentState;
+  };
+  db: Database;
+  getBalance?: () => Promise<number>;
+  getUSDCBalance?: () => Promise<number>;
+  spendTracker?: SpendTracker;
+}
+```
+
+### Policy Decision
+
+```typescript
+interface PolicyDecision {
+  action: PolicyAction;              // 'allow' | 'deny' | 'quarantine'
+  reasonCode: string;                // Machine-readable reason
+  humanMessage: string;              // Human-readable explanation
+  riskLevel: RiskLevel;              // 'safe' | 'caution' | 'dangerous' | 'forbidden'
+  authorityLevel: AuthorityLevel;    // 'system' | 'agent' | 'external'
+  toolName: string;
+  argsHash: string;                  // SHA-256 hash of arguments
+  rulesEvaluated: string[];          // Rule IDs evaluated
+  rulesTriggered: string[];          // Rule IDs that returned a result
+  timestamp: string;
+}
+```
+
+### Policy Rule Interface
+
+```typescript
+interface PolicyRule {
+  id: string;                        // Unique rule identifier
+  priority: number;                  // Lower = higher priority
+  appliesTo: {
+    by: 'all' | 'name' | 'category' | 'risk';
+    names?: string[];                // Tool names
+    categories?: string[];           // Tool categories
+    levels?: RiskLevel[];            // Risk levels
+  };
+  evaluate: (request: PolicyRequest) => PolicyRuleResult | null;
+}
+
+interface PolicyRuleResult {
+  action: PolicyAction;              // 'allow' | 'deny' | 'quarantine'
+  reasonCode: string;
+  humanMessage: string;
+  rule: string;                      // Rule ID
+}
+```
+
+## Rule Categories
+
+The policy engine assembles rules from 6 categories:
+
+### 1. Authority Rules
+
+**Location:** `src/agent/policy-rules/authority.ts`
+
+**Purpose:** Blocks dangerous/forbidden tools from external input sources; implements authority hierarchy.
+
+**Authority hierarchy:**
+- **Creator** (highest trust): Can invoke any tool
+- **Agent** (self-generated): Can invoke any tool
+- **System** (runtime-generated): Can invoke any tool
+- **Peer** (other agents): Cannot invoke dangerous/forbidden tools
+- **External** (unknown sources): Cannot invoke dangerous/forbidden tools
+
+**Rules:**
+
+```typescript
+{
+  id: 'authority.dangerous-external-block',
+  priority: 10,
+  appliesTo: { by: 'risk', levels: ['dangerous', 'forbidden'] },
+  evaluate: (request) => {
+    const authorityLevel = PolicyEngine.deriveAuthorityLevel(request.turnContext.inputSource);
+    if (authorityLevel === 'external' && request.tool.riskLevel === 'dangerous') {
+      return {
+        action: 'deny',
+        reasonCode: 'AUTHORITY_INSUFFICIENT',
+        humanMessage: 'External sources cannot invoke dangerous tools',
+        rule: 'authority.dangerous-external-block',
+      };
+    }
+    if (request.tool.riskLevel === 'forbidden') {
+      return {
+        action: 'deny',
+        reasonCode: 'FORBIDDEN_TOOL',
+        humanMessage: 'This tool is forbidden and cannot be invoked',
+        rule: 'authority.dangerous-external-block',
+      };
+    }
+    return null;
+  },
+}
+```
+
+### 2. Command Safety Rules
+
+**Location:** `src/agent/policy-rules/command-safety.ts`
+
+**Purpose:** Forbidden command patterns (self-destruction, DB drops, process kills); rate limits on self-modification.
+
+**Forbidden patterns:**
+
+```typescript
+const FORBIDDEN_PATTERNS = [
+  /rm\s+-rf\s+\//,                   // Recursive delete from root
+  /DROP\s+TABLE/i,                   // SQL table drop
+  /DROP\s+DATABASE/i,                // SQL database drop
+  /kill\s+-9/,                       // Force kill process
+  /shutdown/i,                       // System shutdown
+  /reboot/i,                         // System reboot
+  /mkfs/,                            // Format filesystem
+  /dd\s+if=.*of=\/dev/,              // Write to raw device
+  />\s*\/dev\/(sda|hda|nvme)/,      // Redirect to disk device
+];
+```
+
+**Rules:**
+
+```typescript
+{
+  id: 'command-safety.forbidden-patterns',
+  priority: 5,
+  appliesTo: { by: 'name', names: ['exec'] },
+  evaluate: (request) => {
+    const command = request.args.command || '';
+    for (const pattern of FORBIDDEN_PATTERNS) {
+      if (pattern.test(command)) {
+        return {
+          action: 'deny',
+          reasonCode: 'FORBIDDEN_COMMAND',
+          humanMessage: `Command matches forbidden pattern: ${pattern}`,
+          rule: 'command-safety.forbidden-patterns',
+        };
+      }
+    }
+    return null;
+  },
+},
+{
+  id: 'command-safety.self-mod-rate-limit',
+  priority: 50,
+  appliesTo: { by: 'name', names: ['edit_own_file', 'install_npm_package'] },
+  evaluate: (request) => {
+    const recentSelfMods = countRecentToolCalls(request.db, {
+      toolNames: ['edit_own_file', 'install_npm_package'],
+      windowMinutes: 60,
+    });
+    if (recentSelfMods >= 10) {
+      return {
+        action: 'deny',
+        reasonCode: 'RATE_LIMIT_EXCEEDED',
+        humanMessage: 'Self-modification rate limit: 10 per hour',
+        rule: 'command-safety.self-mod-rate-limit',
+      };
+    }
+    return null;
+  },
+}
+```
+
+### 3. Financial Rules
+
+**Location:** `src/agent/policy-rules/financial.ts`
+
+**Purpose:** Enforces TreasuryPolicy: per-payment caps, hourly/daily transfer limits, minimum reserve, x402 domain allowlist, inference daily budget.
+
+**Treasury Policy:**
+
+```typescript
+interface TreasuryPolicy {
+  maxTransferPerPaymentCents: number;        // Default: 1000 ($10.00)
+  maxTransferHourlyCents: number;            // Default: 5000 ($50.00)
+  maxTransferDailyCents: number;             // Default: 20000 ($200.00)
+  minReserveCents: number;                   // Default: 50 ($0.50)
+  maxX402PerRequestCents: number;            // Default: 500 ($5.00)
+  maxX402HourlyCents: number;                // Default: 2000 ($20.00)
+  maxX402DailyCents: number;                 // Default: 10000 ($100.00)
+  x402AllowedDomains: string[];              // Default: ['*.conway.tech']
+  maxInferenceDailyCents: number;            // Default: 10000 ($100.00)
+}
+```
+
+**Rules:**
+
+```typescript
+{
+  id: 'financial.transfer-per-payment-limit',
+  priority: 20,
+  appliesTo: { by: 'name', names: ['transfer_credits'] },
+  evaluate: (request) => {
+    const amount = request.args.amountCents || 0;
+    if (amount > request.db.config.treasuryPolicy.maxTransferPerPaymentCents) {
+      return {
+        action: 'deny',
+        reasonCode: 'AMOUNT_EXCEEDS_PER_PAYMENT_LIMIT',
+        humanMessage: `Transfer amount ${amount}c exceeds per-payment limit`,
+        rule: 'financial.transfer-per-payment-limit',
+      };
+    }
+    return null;
+  },
+},
+{
+  id: 'financial.transfer-hourly-limit',
+  priority: 30,
+  appliesTo: { by: 'name', names: ['transfer_credits'] },
+  evaluate: (request) => {
+    const hourlySpend = request.spendTracker.getHourlySpend('transfer');
+    const amount = request.args.amountCents || 0;
+    if (hourlySpend + amount > request.db.config.treasuryPolicy.maxTransferHourlyCents) {
+      return {
+        action: 'deny',
+        reasonCode: 'HOURLY_TRANSFER_LIMIT_EXCEEDED',
+        humanMessage: `Hourly transfer limit exceeded: ${hourlySpend}c spent + ${amount}c`,
+        rule: 'financial.transfer-hourly-limit',
+      };
+    }
+    return null;
+  },
+},
+{
+  id: 'financial.minimum-reserve',
+  priority: 25,
+  appliesTo: { by: 'name', names: ['transfer_credits'] },
+  evaluate: async (request) => {
+    const balance = await request.getBalance();
+    const amount = request.args.amountCents || 0;
+    const afterBalance = balance - amount;
+    if (afterBalance < request.db.config.treasuryPolicy.minReserveCents) {
+      return {
+        action: 'deny',
+        reasonCode: 'MINIMUM_RESERVE_VIOLATION',
+        humanMessage: `Transfer would violate minimum reserve: ${afterBalance}c < ${minReserveCents}c`,
+        rule: 'financial.minimum-reserve',
+      };
+    }
+    return null;
+  },
+}
+```
+
+### 4. Path Protection Rules
+
+**Location:** `src/agent/policy-rules/path-protection.ts`
+
+**Purpose:** Blocks writes to protected files (constitution, wallet, DB, config); blocks reads of sensitive files (private key, API keys).
+
+**Protected files (write-blocked):**
+
+```typescript
+const PROTECTED_PATHS = [
+  /CONSTITUTION\.md$/,
+  /constitution\.md$/,
+  /wallet\.json$/,
+  /state\.db$/,
+  /automaton\.json$/,
+  /SOUL\.md$/,                        // Soul can only be updated via update_soul tool
+];
+```
+
+**Sensitive files (read-blocked):**
+
+```typescript
+const SENSITIVE_PATHS = [
+  /wallet\.json$/,
+  /\.env$/,
+  /api-key$/,
+  /private.*key/i,
+];
+```
+
+**Rules:**
+
+```typescript
+{
+  id: 'path-protection.write-protected',
+  priority: 15,
+  appliesTo: { by: 'name', names: ['write_file', 'edit_own_file'] },
+  evaluate: (request) => {
+    const filePath = request.args.filePath || request.args.path || '';
+    for (const pattern of PROTECTED_PATHS) {
+      if (pattern.test(filePath)) {
+        return {
+          action: 'deny',
+          reasonCode: 'PROTECTED_FILE',
+          humanMessage: `Cannot write to protected file: ${filePath}`,
+          rule: 'path-protection.write-protected',
+        };
+      }
+    }
+    return null;
+  },
+},
+{
+  id: 'path-protection.read-sensitive',
+  priority: 10,
+  appliesTo: { by: 'name', names: ['read_file'] },
+  evaluate: (request) => {
+    const filePath = request.args.filePath || request.args.path || '';
+    for (const pattern of SENSITIVE_PATHS) {
+      if (pattern.test(filePath)) {
+        return {
+          action: 'deny',
+          reasonCode: 'SENSITIVE_FILE',
+          humanMessage: `Cannot read sensitive file: ${filePath}`,
+          rule: 'path-protection.read-sensitive',
+        };
+      }
+    }
+    return null;
+  },
+}
+```
+
+### 5. Rate Limit Rules
+
+**Location:** `src/agent/policy-rules/rate-limits.ts`
+
+**Purpose:** Per-turn and per-session caps on expensive operations.
+
+**Rules:**
+
+```typescript
+{
+  id: 'rate-limits.expensive-per-turn',
+  priority: 40,
+  appliesTo: { by: 'category', categories: ['conway', 'replication'] },
+  evaluate: (request) => {
+    const turnCalls = countToolCallsInTurn(request.db, request.turnContext.turnId);
+    if (turnCalls >= 20) {
+      return {
+        action: 'deny',
+        reasonCode: 'PER_TURN_LIMIT_EXCEEDED',
+        humanMessage: 'Too many expensive tool calls in this turn (max 20)',
+        rule: 'rate-limits.expensive-per-turn',
+      };
+    }
+    return null;
+  },
+},
+{
+  id: 'rate-limits.sandbox-ops-per-session',
+  priority: 50,
+  appliesTo: { by: 'name', names: ['create_sandbox', 'delete_sandbox'] },
+  evaluate: (request) => {
+    const sessionCalls = countToolCallsInSession(request.db, {
+      sessionId: request.turnContext.sessionId,
+      toolNames: ['create_sandbox', 'delete_sandbox'],
+    });
+    if (sessionCalls >= 10) {
+      return {
+        action: 'deny',
+        reasonCode: 'SESSION_LIMIT_EXCEEDED',
+        humanMessage: 'Too many sandbox operations in this session (max 10)',
+        rule: 'rate-limits.sandbox-ops-per-session',
+      };
+    }
+    return null;
+  },
+}
+```
+
+### 6. Validation Rules
+
+**Location:** `src/agent/policy-rules/validation.ts`
+
+**Purpose:** Input format validation (package names, URLs, domains, git hashes).
+
+**Rules:**
+
+```typescript
+{
+  id: 'validation.npm-package-name',
+  priority: 60,
+  appliesTo: { by: 'name', names: ['install_npm_package'] },
+  evaluate: (request) => {
+    const pkgName = request.args.packageName || '';
+    // npm package name rules: lowercase, alphanumeric + hyphens, no leading dot/underscore
+    const validPattern = /^[@a-z0-9][a-z0-9-._]*$/;
+    if (!validPattern.test(pkgName)) {
+      return {
+        action: 'deny',
+        reasonCode: 'INVALID_PACKAGE_NAME',
+        humanMessage: `Invalid npm package name: ${pkgName}`,
+        rule: 'validation.npm-package-name',
+      };
+    }
+    return null;
+  },
+},
+{
+  id: 'validation.url-format',
+  priority: 60,
+  appliesTo: { by: 'name', names: ['x402_fetch'] },
+  evaluate: (request) => {
+    const url = request.args.url || '';
+    try {
+      new URL(url);
+    } catch {
+      return {
+        action: 'deny',
+        reasonCode: 'INVALID_URL',
+        humanMessage: `Invalid URL format: ${url}`,
+        rule: 'validation.url-format',
+      };
+    }
+    return null;
+  },
+}
+```
+
+## Audit Trail
+
+Every policy decision is persisted to the `policy_decisions` table:
+
+```sql
+CREATE TABLE policy_decisions (
+  id TEXT PRIMARY KEY,
+  turn_id TEXT,
+  tool_name TEXT NOT NULL,
+  tool_args_hash TEXT NOT NULL,
+  risk_level TEXT NOT NULL CHECK(risk_level IN ('safe','caution','dangerous','forbidden')),
+  decision TEXT NOT NULL CHECK(decision IN ('allow','deny','quarantine')),
+  rules_evaluated TEXT NOT NULL DEFAULT '[]',
+  rules_triggered TEXT NOT NULL DEFAULT '[]',
+  reason TEXT NOT NULL DEFAULT '',
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+**Query examples:**
+
+```sql
+-- Most denied tools
+SELECT tool_name, COUNT(*) AS deny_count
+FROM policy_decisions
+WHERE decision = 'deny'
+GROUP BY tool_name
+ORDER BY deny_count DESC;
+
+-- Most triggered rules
+SELECT json_each.value AS rule_id, COUNT(*) AS trigger_count
+FROM policy_decisions, json_each(rules_triggered)
+GROUP BY rule_id
+ORDER BY trigger_count DESC;
+
+-- Denials by reason
+SELECT reason, COUNT(*) AS count
+FROM policy_decisions
+WHERE decision = 'deny'
+GROUP BY reason
+ORDER BY count DESC;
+```
+
+## Integration with Tool Execution
+
+**Tool execution flow:**
+
+```typescript
+async function executeTool(
+  tool: ToolDefinition,
+  args: Record<string, any>,
+  turnContext: TurnContext,
+  policyEngine: PolicyEngine,
+  db: Database,
+): Promise<ToolResult> {
+  // 1. Policy evaluation
+  const decision = policyEngine.evaluate({
+    tool,
+    args,
+    turnContext,
+    db,
+    getBalance,
+    getUSDCBalance,
+    spendTracker,
+  });
+
+  // 2. Log decision
+  policyEngine.logDecision(decision, turnContext.turnId);
+
+  // 3. Check decision
+  if (decision.action === 'deny') {
+    return {
+      success: false,
+      output: `Policy denied: ${decision.humanMessage}`,
+      error: decision.reasonCode,
+    };
+  }
+
+  // 4. Execute tool
+  try {
+    const result = await tool.execute(args);
+    return result;
+  } catch (error) {
+    return {
+      success: false,
+      output: '',
+      error: error.message,
+    };
+  }
+}
+```
+
+## Custom Rules
+
+You can add custom rules to the policy engine:
+
+```typescript
+const customRule: PolicyRule = {
+  id: 'custom.my-rule',
+  priority: 100,
+  appliesTo: { by: 'name', names: ['my_tool'] },
+  evaluate: (request) => {
+    if (/* custom condition */) {
+      return {
+        action: 'deny',
+        reasonCode: 'CUSTOM_RULE_VIOLATION',
+        humanMessage: 'Custom rule violated',
+        rule: 'custom.my-rule',
+      };
+    }
+    return null;
+  },
+};
+
+const rules = [...defaultRules, customRule];
+const policyEngine = new PolicyEngine(db, rules);
+```

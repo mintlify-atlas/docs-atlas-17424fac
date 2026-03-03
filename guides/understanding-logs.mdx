@@ -1,0 +1,632 @@
+---
+title: Understanding Logs
+description: Master the automaton's logging system and learn to diagnose issues from structured logs
+---
+
+## Log System Overview
+
+Conway Automaton uses structured JSON logging for all operations. Logs are written to stdout in real-time and can be consumed by log aggregation systems.
+
+## Log Format
+
+Every log entry is a JSON object:
+
+```json
+{
+  "timestamp": "2026-03-03T10:15:30.123Z",
+  "level": "info",
+  "module": "heartbeat.scheduler",
+  "message": "Heartbeat task completed",
+  "context": {
+    "taskName": "check_inbox",
+    "durationMs": 234,
+    "shouldWake": false
+  }
+}
+```
+
+### Fields
+
+- **timestamp**: ISO 8601 timestamp with milliseconds
+- **level**: Log level (`debug`, `info`, `warn`, `error`, `fatal`)
+- **module**: Hierarchical module name (e.g., `agent.tools`, `conway.credits`)
+- **message**: Human-readable message
+- **context**: Structured data (optional)
+- **error**: Error details (optional, for error/fatal levels)
+
+### Error Log Example
+
+```json
+{
+  "timestamp": "2026-03-03T10:20:15.456Z",
+  "level": "error",
+  "module": "conway.topup",
+  "message": "Credit topup failed",
+  "context": {
+    "amountUsd": 25,
+    "address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1"
+  },
+  "error": {
+    "message": "Insufficient USDC balance",
+    "code": "INSUFFICIENT_FUNDS",
+    "stack": "Error: Insufficient USDC balance\n    at topupCredits..."
+  }
+}
+```
+
+## Log Levels
+
+### debug
+
+Detailed diagnostic information for development and troubleshooting.
+
+**Examples**:
+
+- Tool argument parsing
+- Database query execution
+- Context token counting
+- Heartbeat tick details
+
+**When to use**: Investigating specific issues, tracing execution flow
+
+### info
+
+General informational messages about normal operation.
+
+**Examples**:
+
+- Agent turn completed
+- Heartbeat task success
+- Credit topup successful
+- Skill loaded
+
+**When to use**: Default log level for production
+
+### warn
+
+Warning messages for potentially problematic situations that don't prevent operation.
+
+**Examples**:
+
+- Treasury policy limit reached
+- Failed requirement check for skill
+- High context token usage
+- Approaching credit threshold
+
+**When to use**: Monitoring for issues that may need attention
+
+### error
+
+Error messages for operations that failed but didn't crash the system.
+
+**Examples**:
+
+- Tool execution error
+- API request failure
+- x402 payment rejected
+- Database transaction rollback
+
+**When to use**: Diagnosing failures and errors
+
+### fatal
+
+Critical errors that require system shutdown.
+
+**Examples**:
+
+- Database corruption
+- Wallet file missing
+- Unrecoverable API errors
+- Configuration invalid
+
+**When to use**: System-level failures
+
+## Viewing Logs
+
+### CLI Commands
+
+```bash
+# Stream all logs (live)
+automaton-cli logs --follow
+
+# Last 100 lines
+automaton-cli logs --tail 100
+
+# Filter by level
+automaton-cli logs --level error
+automaton-cli logs --level warn --level error  # Multiple levels
+
+# Filter by module
+automaton-cli logs --module heartbeat
+automaton-cli logs --module "conway.*"  # Wildcards
+
+# Search message content
+automaton-cli logs --grep "credit"
+automaton-cli logs --grep "topup|transfer"  # Regex
+
+# Time range
+automaton-cli logs --since "2026-03-03T10:00:00Z"
+automaton-cli logs --until "2026-03-03T12:00:00Z"
+automaton-cli logs --since "1 hour ago"
+
+# JSON output (for processing)
+automaton-cli logs --format json
+
+# Combine filters
+automaton-cli logs --level error --module conway --since "1 day ago"
+```
+
+### Direct File Access
+
+If running as a daemon, logs may be written to a file:
+
+```bash
+# Follow logs
+tail -f ~/.automaton/logs/automaton.log
+
+# Search logs
+grep "error" ~/.automaton/logs/automaton.log
+
+# Parse JSON logs with jq
+cat ~/.automaton/logs/automaton.log | jq 'select(.level == "error")'
+```
+
+## Log Modules
+
+From the source code structure:
+
+### Core Modules
+
+- **config**: Configuration loading and validation
+- **database**: SQLite operations
+- **wallet**: Wallet management
+
+### Agent Modules
+
+- **agent.loop**: Main agent loop
+- **agent.tools**: Tool execution
+- **agent.context**: Context building
+- **agent.policy**: Policy engine
+
+### Conway Modules
+
+- **conway.client**: Conway API client
+- **conway.credits**: Credit balance checks
+- **conway.topup**: x402 credit purchases
+- **conway.inference**: Model inference routing
+
+### Heartbeat Modules
+
+- **heartbeat.scheduler**: Task scheduling
+- **heartbeat.daemon**: Daemon process
+- **heartbeat.tasks**: Task execution
+
+### Skills Modules
+
+- **skills.loader**: Skill discovery and loading
+- **skills.registry**: Skill management
+
+### Memory Modules
+
+- **memory.episodic**: Episodic memory
+- **memory.semantic**: Semantic memory
+- **memory.working**: Working memory
+- **memory.compression**: Context compression
+
+### Observability Modules
+
+- **observability.logger**: Logging system
+- **observability.metrics**: Metrics collection
+- **observability.alerts**: Alert evaluation
+
+### Replication Modules
+
+- **replication.spawn**: Child creation
+- **replication.health**: Health monitoring
+- **replication.messaging**: Inter-agent messaging
+
+## Reading Common Log Patterns
+
+### Agent Turn Execution
+
+```json
+// Turn started
+{
+  "level": "info",
+  "module": "agent.loop",
+  "message": "Starting agent turn",
+  "context": {
+    "turnId": "01HWQK2G9MXYZ",
+    "inputSource": "heartbeat",
+    "state": "running"
+  }
+}
+
+// Tool called
+{
+  "level": "debug",
+  "module": "agent.tools",
+  "message": "Executing tool",
+  "context": {
+    "toolName": "check_balance",
+    "turnId": "01HWQK2G9MXYZ"
+  }
+}
+
+// Turn completed
+{
+  "level": "info",
+  "module": "agent.loop",
+  "message": "Agent turn completed",
+  "context": {
+    "turnId": "01HWQK2G9MXYZ",
+    "durationMs": 1234,
+    "tokenUsage": 567,
+    "costCents": 12
+  }
+}
+```
+
+### Credit Topup Flow
+
+```json
+// Topup initiated
+{
+  "level": "info",
+  "module": "conway.topup",
+  "message": "Attempting credit topup: $25 USD"
+}
+
+// x402 payment
+{
+  "level": "debug",
+  "module": "conway.x402",
+  "message": "Signing USDC transfer authorization",
+  "context": {
+    "amount": 25,
+    "validAfter": "2026-03-03T10:00:00Z",
+    "validBefore": "2026-03-03T10:05:00Z"
+  }
+}
+
+// Topup success
+{
+  "level": "info",
+  "module": "conway.topup",
+  "message": "Credit topup successful: $25 USD → 2500 credits cents"
+}
+```
+
+### Heartbeat Task Execution
+
+```json
+// Task started
+{
+  "level": "debug",
+  "module": "heartbeat.scheduler",
+  "message": "Executing heartbeat task",
+  "context": {
+    "taskName": "check_inbox",
+    "tickId": "01HWQK3H7PQRS"
+  }
+}
+
+// Task result
+{
+  "level": "info",
+  "module": "heartbeat.tasks",
+  "message": "Inbox check completed",
+  "context": {
+    "unreadCount": 3,
+    "shouldWake": true
+  }
+}
+
+// Wake event created
+{
+  "level": "info",
+  "module": "heartbeat.scheduler",
+  "message": "Wake event created",
+  "context": {
+    "source": "heartbeat",
+    "reason": "Unread messages in inbox"
+  }
+}
+```
+
+### Policy Denial
+
+```json
+{
+  "level": "warn",
+  "module": "agent.policy",
+  "message": "Policy denied tool execution",
+  "context": {
+    "toolName": "transfer_credits",
+    "reasonCode": "EXCEEDS_DAILY_LIMIT",
+    "humanMessage": "Transfer denied: daily limit of $250 reached",
+    "riskLevel": "dangerous",
+    "currentDailySpend": 25000
+  }
+}
+```
+
+### Skill Loading
+
+```json
+// Skill discovered
+{
+  "level": "debug",
+  "module": "skills.loader",
+  "message": "Parsing skill file",
+  "context": {
+    "path": "/home/user/.automaton/skills/web-scraper/SKILL.md"
+  }
+}
+
+// Requirements check
+{
+  "level": "debug",
+  "module": "skills.loader",
+  "message": "Checking skill requirements",
+  "context": {
+    "skillName": "web-scraper",
+    "requiredBins": ["curl", "jq"]
+  }
+}
+
+// Skill loaded
+{
+  "level": "info",
+  "module": "skills.loader",
+  "message": "Skill loaded successfully",
+  "context": {
+    "skillName": "web-scraper",
+    "autoActivate": true
+  }
+}
+```
+
+## Log Analysis
+
+### Performance Analysis
+
+Find slowest turns:
+
+```bash
+automaton-cli logs --module agent.loop --format json | \
+  jq -r 'select(.message == "Agent turn completed") | "\(.context.durationMs)\t\(.context.turnId)"' | \
+  sort -rn | \
+  head -10
+```
+
+### Error Rate Calculation
+
+```bash
+# Count errors by module
+automaton-cli logs --level error --since "1 day ago" --format json | \
+  jq -r '.module' | \
+  sort | \
+  uniq -c | \
+  sort -rn
+```
+
+### Cost Analysis
+
+```bash
+# Sum inference costs
+automaton-cli logs --module agent.loop --format json | \
+  jq -r 'select(.message == "Agent turn completed") | .context.costCents' | \
+  awk '{sum+=$1} END {print "Total cost: $" sum/100}'
+```
+
+### Timeline Reconstruction
+
+```bash
+# Show activity timeline
+automaton-cli logs --since "1 hour ago" --format json | \
+  jq -r '"\(.timestamp) [\(.level | ascii_upcase)] \(.module): \(.message)"'
+```
+
+## Configuring Log Level
+
+Set log level in `automaton.json`:
+
+```json
+{
+  "logLevel": "info"
+}
+```
+
+Or via environment variable:
+
+```bash
+export AUTOMATON_LOG_LEVEL=debug
+automaton-cli start
+```
+
+### Log Level Hierarchy
+
+From `src/types.ts`:
+
+```typescript
+export const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+  fatal: 4,
+};
+```
+
+Setting level to `warn` will show `warn`, `error`, and `fatal` messages.
+
+## Log Rotation
+
+If using file-based logging, configure rotation:
+
+```bash
+# Using logrotate
+sudo tee /etc/logrotate.d/automaton <<EOF
+/home/user/.automaton/logs/automaton.log {
+  daily
+  rotate 30
+  compress
+  delaycompress
+  missingok
+  notifempty
+  create 0600 user user
+}
+EOF
+```
+
+## Integration with Log Aggregation
+
+### Shipping to Elasticsearch
+
+```bash
+automaton-cli logs --follow --format json | \
+  filebeat -c /etc/filebeat/filebeat.yml
+```
+
+### CloudWatch Logs
+
+```bash
+automaton-cli logs --follow --format json | \
+  aws logs put-log-events \
+    --log-group-name /conway/automaton \
+    --log-stream-name $(hostname)
+```
+
+### Datadog
+
+```bash
+automaton-cli logs --follow --format json | \
+  datadog-agent run
+```
+
+## Debugging Techniques
+
+### Tracing a Specific Turn
+
+```bash
+# Get turnId from status
+TURN_ID=$(automaton-cli status --format json | jq -r '.lastTurnId')
+
+# Show all logs for that turn
+automaton-cli logs --format json | \
+  jq --arg tid "$TURN_ID" 'select(.context.turnId == $tid)'
+```
+
+### Correlation by Timestamp
+
+```bash
+# Find what happened around a specific time
+automaton-cli logs \
+  --since "2026-03-03T10:15:00Z" \
+  --until "2026-03-03T10:16:00Z"
+```
+
+### Following Module Activity
+
+```bash
+# Watch specific module in real-time
+automaton-cli logs --follow --module conway.topup
+```
+
+### Extracting Error Context
+
+```bash
+# Show errors with full context
+automaton-cli logs --level error --format json | \
+  jq '{timestamp, module, message, context, error}'
+```
+
+## Common Log Messages
+
+### Startup Sequence
+
+```
+[info] config: Configuration loaded successfully
+[info] database: Database opened: ~/.automaton/state.db
+[info] wallet: Wallet loaded: 0x742d...
+[info] skills.loader: Loaded 3 skills
+[info] heartbeat.daemon: Heartbeat daemon started
+[info] agent.loop: Automaton started
+```
+
+### Normal Operation
+
+```
+[info] heartbeat.scheduler: Heartbeat tick started
+[info] heartbeat.tasks: Balance check completed
+[info] heartbeat.tasks: Inbox check completed
+[info] agent.loop: Starting agent turn
+[info] agent.loop: Agent turn completed
+```
+
+### Low Credit Warning
+
+```
+[warn] conway.credits: Credit balance below threshold
+[info] conway.topup: Attempting credit topup: $5 USD
+[info] conway.topup: Credit topup successful
+```
+
+### Skill Installation
+
+```
+[debug] skills.loader: Parsing skill file
+[debug] skills.loader: Checking skill requirements
+[info] skills.loader: Skill loaded successfully
+```
+
+### Error Scenarios
+
+```
+[error] conway.client: API request failed: 503 Service Unavailable
+[error] agent.tools: Tool execution error: timeout after 30s
+[error] database: Transaction rollback: constraint violation
+```
+
+## Best Practices
+
+1. **Use appropriate log levels**: Don't log everything at `info`
+2. **Include context**: Add relevant data to context objects
+3. **Never log secrets**: Redact API keys, private keys, etc.
+4. **Use structured context**: Prefer context fields over string interpolation
+5. **Consistent module naming**: Follow the hierarchical pattern
+6. **Log boundaries**: Start/end of important operations
+7. **Log decisions**: Why did the agent do something?
+8. **Keep messages concise**: Details go in context
+
+## Troubleshooting with Logs
+
+### Agent not waking up
+
+```bash
+automaton-cli logs --module heartbeat --since "1 hour ago"
+# Look for: wake event creation, shouldWake: true/false
+```
+
+### High costs
+
+```bash
+automaton-cli logs --module agent.loop --format json | \
+  jq 'select(.context.costCents > 100)'
+# Identify expensive turns
+```
+
+### Tool failures
+
+```bash
+automaton-cli logs --level error --module agent.tools
+# Review error messages and stack traces
+```
+
+### Policy denials
+
+```bash
+automaton-cli logs --grep "Policy denied"
+# Check reasonCode and humanMessage
+```

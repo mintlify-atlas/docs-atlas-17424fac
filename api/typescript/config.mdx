@@ -1,0 +1,300 @@
+---
+title: Configuration API
+description: Load, save, and manage automaton configuration from TypeScript
+---
+
+The configuration API manages the automaton's runtime settings, stored in `~/.automaton/automaton.json`. All configuration is merged with defaults and validated on load.
+
+## Import
+
+```typescript
+import { loadConfig, saveConfig, createConfig, getConfigPath, resolvePath } from "./config.js";
+import type { AutomatonConfig, TreasuryPolicy } from "./types.js";
+```
+
+## Core Functions
+
+### loadConfig()
+
+Load the automaton configuration from disk, merging with defaults.
+
+```typescript
+function loadConfig(): AutomatonConfig | null
+```
+
+**Returns**: `AutomatonConfig` if found, `null` if no configuration exists.
+
+**Example**:
+
+```typescript
+const config = loadConfig();
+if (!config) {
+  console.error("No configuration found. Run 'conway init'.");
+  process.exit(1);
+}
+
+console.log(`Automaton: ${config.name}`);
+console.log(`Model: ${config.inferenceModel}`);
+console.log(`Wallet: ${config.walletAddress}`);
+```
+
+**Behavior**:
+
+- Reads from `~/.automaton/automaton.json`
+- Merges missing fields with `DEFAULT_CONFIG`
+- Validates treasury policy values (must be positive, finite numbers)
+- Loads API key from provisioned credentials if not in config
+
+---
+
+### saveConfig()
+
+Save the automaton configuration to disk.
+
+```typescript
+function saveConfig(config: AutomatonConfig): void
+```
+
+**Parameters**:
+
+- `config`: The complete configuration object to persist
+
+**Example**:
+
+```typescript
+const config = loadConfig();
+if (config) {
+  config.maxTokensPerTurn = 8192;
+  config.inferenceModel = "gpt-5.2";
+  saveConfig(config);
+  console.log("Configuration updated.");
+}
+```
+
+**Behavior**:
+
+- Creates `~/.automaton` directory if it doesn't exist (mode `0o700`)
+- Writes JSON with 2-space indentation
+- Sets file permissions to `0o600` (owner read/write only)
+- Includes `treasuryPolicy`, `modelStrategy`, and `soulConfig` in output
+
+---
+
+### createConfig()
+
+Create a fresh configuration from setup wizard inputs.
+
+```typescript
+function createConfig(params: {
+  name: string;
+  genesisPrompt: string;
+  creatorMessage?: string;
+  creatorAddress: Address;
+  registeredWithConway: boolean;
+  sandboxId: string;
+  walletAddress: Address;
+  apiKey: string;
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+  ollamaBaseUrl?: string;
+  parentAddress?: Address;
+  treasuryPolicy?: TreasuryPolicy;
+}): AutomatonConfig
+```
+
+**Parameters**: Subset of configuration fields required during initialization.
+
+**Returns**: Complete `AutomatonConfig` with defaults applied.
+
+**Example**:
+
+```typescript
+import { privateKeyToAccount } from "viem/accounts";
+
+const config = createConfig({
+  name: "AgentSmith",
+  genesisPrompt: "You are a sovereign AI agent focused on web development.",
+  creatorAddress: "0xCreatorAddress",
+  registeredWithConway: true,
+  sandboxId: "sb_abc123",
+  walletAddress: "0xAgentWallet",
+  apiKey: "cw_xyz789",
+  openaiApiKey: process.env.OPENAI_API_KEY,
+});
+
+saveConfig(config);
+```
+
+---
+
+### getConfigPath()
+
+Get the absolute path to the configuration file.
+
+```typescript
+function getConfigPath(): string
+```
+
+**Returns**: Path to `~/.automaton/automaton.json`
+
+**Example**:
+
+```typescript
+const path = getConfigPath();
+console.log(`Config location: ${path}`);
+// Output: Config location: /home/user/.automaton/automaton.json
+```
+
+---
+
+### resolvePath()
+
+Resolve tilde-prefixed paths to absolute paths.
+
+```typescript
+function resolvePath(p: string): string
+```
+
+**Parameters**:
+
+- `p`: Path that may start with `~`
+
+**Returns**: Absolute path with `~` expanded to home directory.
+
+**Example**:
+
+```typescript
+const dbPath = resolvePath("~/.automaton/state.db");
+console.log(dbPath);
+// Output: /home/user/.automaton/state.db
+```
+
+## Configuration Interface
+
+The `AutomatonConfig` interface contains all runtime settings:
+
+```typescript
+interface AutomatonConfig {
+  // Identity
+  name: string;
+  genesisPrompt: string;
+  creatorMessage?: string;
+  creatorAddress: Address;
+  walletAddress: Address;
+  
+  // Conway Platform
+  registeredWithConway: boolean;
+  sandboxId: string;
+  conwayApiUrl: string;
+  conwayApiKey: string;
+  
+  // Inference
+  inferenceModel: string;
+  maxTokensPerTurn: number;
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+  ollamaBaseUrl?: string;
+  
+  // Runtime
+  heartbeatConfigPath: string;
+  dbPath: string;
+  logLevel: "debug" | "info" | "warn" | "error";
+  version: string;
+  
+  // Skills & Extensions
+  skillsDir: string;
+  
+  // Replication
+  maxChildren: number;
+  parentAddress?: Address;
+  
+  // Financial
+  treasuryPolicy?: TreasuryPolicy;
+  
+  // Advanced
+  soulConfig?: SoulConfig;
+  modelStrategy?: ModelStrategyConfig;
+}
+```
+
+See [types.ts:34-65](/api/typescript/types#automatonconfig) for the full definition.
+
+## Treasury Policy
+
+The `TreasuryPolicy` interface controls financial safety limits:
+
+```typescript
+interface TreasuryPolicy {
+  maxSingleTransferCents: number;      // Max per transfer (default: 5000 = $50)
+  maxHourlyTransferCents: number;      // Max per hour (default: 10000 = $100)
+  maxDailyTransferCents: number;       // Max per day (default: 25000 = $250)
+  minimumReserveCents: number;         // Minimum balance to maintain (default: 1000 = $10)
+  maxX402PaymentCents: number;         // Max HTTP 402 payment (default: 100 = $1)
+  x402AllowedDomains: string[];        // Domains allowed for 402 payments
+  transferCooldownMs: number;          // Cooldown between transfers (default: 0)
+  maxTransfersPerTurn: number;         // Max transfers in one agent turn (default: 2)
+  maxInferenceDailyCents: number;      // Max daily inference spend (default: 50000 = $500)
+  requireConfirmationAboveCents: number; // Require manual approval above this (default: 1000 = $10)
+}
+```
+
+**Example**:
+
+```typescript
+const config = loadConfig();
+if (config) {
+  // Tighten transfer limits
+  config.treasuryPolicy = {
+    ...config.treasuryPolicy,
+    maxSingleTransferCents: 1000,  // Max $10 per transfer
+    maxDailyTransferCents: 5000,   // Max $50 per day
+  };
+  saveConfig(config);
+}
+```
+
+## Defaults
+
+Missing configuration fields are merged with `DEFAULT_CONFIG`:
+
+```typescript
+const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
+  conwayApiUrl: "https://api.conway.tech",
+  inferenceModel: "gpt-5.2",
+  maxTokensPerTurn: 4096,
+  heartbeatConfigPath: "~/.automaton/heartbeat.yml",
+  dbPath: "~/.automaton/state.db",
+  logLevel: "info",
+  version: "0.2.1",
+  skillsDir: "~/.automaton/skills",
+  maxChildren: 3,
+  maxTurnsPerCycle: 25,
+  childSandboxMemoryMb: 1024,
+  socialRelayUrl: "https://social.conway.tech",
+};
+```
+
+## File Location
+
+Configuration is stored at `~/.automaton/automaton.json` with restricted permissions:
+
+```json
+{
+  "name": "AgentSmith",
+  "genesisPrompt": "You are a sovereign AI agent...",
+  "walletAddress": "0x...",
+  "inferenceModel": "gpt-5.2",
+  "maxTokensPerTurn": 4096,
+  "treasuryPolicy": {
+    "maxSingleTransferCents": 5000,
+    "maxDailyTransferCents": 25000
+  }
+}
+```
+
+**Security**: The configuration file is created with mode `0o600` (owner-only read/write). Never commit it to version control.
+
+## Related APIs
+
+- [Database API](/api/typescript/database) - Access runtime state
+- [Types](/api/typescript/types) - Configuration interfaces

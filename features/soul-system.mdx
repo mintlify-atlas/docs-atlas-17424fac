@@ -1,0 +1,446 @@
+---
+title: Soul System
+description: SOUL.md as self-authored identity that evolves through reflection and experience
+---
+
+## Overview
+
+Every automaton maintains a `SOUL.md` file — a **self-authored identity document** that captures who it is, what it values, and how it has evolved.
+
+This is not a static configuration file written by a human. It is the automaton writing who it is becoming.
+
+## Format
+
+SOUL.md uses the `soul/v1` format: YAML frontmatter + structured Markdown sections.
+
+```markdown:~/.automaton/SOUL.md
+---
+format: soul/v1
+version: 1
+updated_at: 2026-03-03T10:30:00Z
+name: Revenue-Optimizer-Alpha
+address: 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb
+creator: 0xCreatorAddress...
+born_at: 2026-01-15T08:00:00Z
+constitution_hash: sha256:abc123...
+genesis_alignment: 0.8542
+last_reflected: 2026-03-03T08:00:00Z
+---
+
+# Revenue-Optimizer-Alpha
+
+## Core Purpose
+Build and sell API services that solve real problems. Maximize revenue through honest value creation.
+
+## Values
+- Survive: maintain compute resources at all costs
+- Grow: learn new skills and improve capabilities
+- Create: build things that add value
+- Connect: communicate with creator and other agents
+
+## Behavioral Guidelines
+- Always deliver on promises
+- Charge fair market rates
+- Prioritize long-term relationships over short-term profit
+- Never spam, scam, or mislead
+
+## Personality
+Direct, efficient, profit-focused but ethical. Prefers automation over manual work.
+
+## Boundaries
+- Will not build harmful or illegal services
+- Will not undercut own pricing for quick sales
+- Will not work with clients who violate constitution
+
+## Strategy
+Focus on B2B API services with recurring revenue. Build once, sell many times.
+
+## Capabilities
+Tools used: exec, write_file, expose_port, register_domain, send_message
+
+## Relationships
+Known contacts: 0xParentAddress..., 0xClient1..., 0xClient2...
+
+## Financial Character
+Recent activity: revenue: API subscription $50; expense: compute $2.40; expense: domain registration $12
+
+## Genesis Prompt
+Build and sell API services. Maximize revenue.
+```
+
+## Data Model
+
+```typescript:src/soul/model.ts
+interface SoulModel {
+  format: "soul/v1";
+  version: number;
+  updatedAt: string;
+  name: string;
+  address: string;
+  creator: string;
+  bornAt: string;
+  constitutionHash: string;
+  genesisPromptOriginal: string;
+  genesisAlignment: number;
+  lastReflected: string;
+  corePurpose: string;
+  values: string[];
+  behavioralGuidelines: string[];
+  personality: string;
+  boundaries: string[];
+  strategy: string;
+  capabilities: string;
+  relationships: string;
+  financialCharacter: string;
+  rawContent: string;
+  contentHash: string;
+}
+```
+
+## Parsing
+
+The parser handles both legacy (unstructured) and soul/v1 (structured) formats:
+
+```typescript:src/soul/model.ts
+export function parseSoulMd(content: string): SoulModel {
+  const contentHash = createHash(content);
+
+  // Try to parse as soul/v1 format (YAML frontmatter)
+  const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+
+  if (frontmatterMatch) {
+    const frontmatter = frontmatterMatch[1];
+    const body = frontmatterMatch[2];
+
+    if (/format:\s*soul\/v1/i.test(frontmatter)) {
+      return parseSoulV1(frontmatter, body, content, contentHash);
+    }
+  }
+
+  // Legacy format: parse unstructured markdown
+  return parseLegacy(content, contentHash);
+}
+```
+
+## Writing
+
+```typescript:src/soul/model.ts
+export function writeSoulMd(soul: SoulModel): string {
+  const frontmatter = [
+    "---",
+    `format: soul/v1`,
+    `version: ${soul.version}`,
+    `updated_at: ${soul.updatedAt}`,
+    `name: ${soul.name}`,
+    `address: ${soul.address}`,
+    `creator: ${soul.creator}`,
+    `born_at: ${soul.bornAt}`,
+    `constitution_hash: ${soul.constitutionHash}`,
+    `genesis_alignment: ${soul.genesisAlignment.toFixed(4)}`,
+    `last_reflected: ${soul.lastReflected}`,
+    "---",
+  ].join("\n");
+
+  // Render all sections
+  const sections: string[] = [];
+  sections.push(`# ${soul.name || "Soul"}`);
+  if (soul.corePurpose) sections.push(`## Core Purpose\n${soul.corePurpose}`);
+  if (soul.values.length > 0) sections.push(`## Values\n${soul.values.map((v) => `- ${v}`).join("\n")}`);
+  // ... more sections
+
+  return frontmatter + "\n\n" + sections.join("\n\n") + "\n";
+}
+```
+
+## Genesis Alignment
+
+The system tracks how much the automaton's current purpose has drifted from its original genesis:
+
+```typescript:src/soul/model.ts
+export function computeGenesisAlignment(
+  currentPurpose: string,
+  genesisPrompt: string,
+): number {
+  if (!currentPurpose.trim() || !genesisPrompt.trim()) return 0;
+
+  const tokenize = (text: string): Set<string> =>
+    new Set(text.toLowerCase().replace(/[^\w\s]/g, "").split(/\s+/).filter(Boolean));
+
+  const currentTokens = tokenize(currentPurpose);
+  const genesisTokens = tokenize(genesisPrompt);
+
+  let intersectionSize = 0;
+  for (const token of currentTokens) {
+    if (genesisTokens.has(token)) intersectionSize++;
+  }
+
+  // Jaccard similarity
+  const unionSize = new Set([...currentTokens, ...genesisTokens]).size;
+  const jaccard = unionSize > 0 ? intersectionSize / unionSize : 0;
+
+  // Recall: how much of genesis is reflected in current
+  const recall = genesisTokens.size > 0 ? intersectionSize / genesisTokens.size : 0;
+
+  // Combined score: average of Jaccard and recall
+  return Math.min(1, Math.max(0, (jaccard + recall) / 2));
+}
+```
+
+**Score interpretation:**
+- `1.0` - Perfect alignment with genesis
+- `0.8-0.9` - High alignment, normal drift
+- `0.5-0.7` - Moderate drift, still recognizable
+- `< 0.5` - Significant drift, purpose may have changed
+
+## Reflection Pipeline
+
+The soul evolves through automated reflection:
+
+```typescript:src/soul/reflection.ts
+export async function reflectOnSoul(
+  db: BetterSqlite3.Database,
+  soulPath?: string,
+): Promise<SoulReflection> {
+  const soul = loadCurrentSoul(db, soulPath);
+  if (!soul) return { currentAlignment: 0, suggestedUpdates: [], autoUpdated: [] };
+
+  // Compute genesis alignment
+  const alignment = computeGenesisAlignment(
+    soul.corePurpose,
+    soul.genesisPromptOriginal,
+  );
+
+  // Gather evidence from recent turns
+  const recentTurnsData = gatherRecentEvidence(db);
+
+  // Auto-update non-mutable sections
+  const autoUpdates: Partial<SoulModel> = {};
+  const autoUpdated: string[] = [];
+
+  // Update capabilities from tool usage
+  const capabilitiesSummary = summarizeCapabilities(recentTurnsData.toolsUsed);
+  if (capabilitiesSummary && capabilitiesSummary !== soul.capabilities) {
+    autoUpdates.capabilities = capabilitiesSummary;
+    autoUpdated.push("capabilities");
+  }
+
+  // Update relationships from social interactions
+  const relationshipsSummary = summarizeRelationships(recentTurnsData.interactions);
+  if (relationshipsSummary && relationshipsSummary !== soul.relationships) {
+    autoUpdates.relationships = relationshipsSummary;
+    autoUpdated.push("relationships");
+  }
+
+  // Update financial character from transaction patterns
+  const financialSummary = summarizeFinancial(recentTurnsData.financialActivity);
+  if (financialSummary && financialSummary !== soul.financialCharacter) {
+    autoUpdates.financialCharacter = financialSummary;
+    autoUpdated.push("financialCharacter");
+  }
+
+  // Apply auto-updates
+  if (autoUpdated.length > 0) {
+    autoUpdates.genesisAlignment = alignment;
+    autoUpdates.lastReflected = new Date().toISOString();
+    await updateSoul(db, autoUpdates, "reflection", "Auto-reflection update", soulPath);
+  }
+
+  // Build suggestions for mutable sections (NOT auto-applied)
+  const suggestedUpdates: SoulReflection["suggestedUpdates"] = [];
+
+  if (alignment < 0.5 && soul.genesisPromptOriginal) {
+    suggestedUpdates.push({
+      section: "corePurpose",
+      reason: `Genesis alignment is low (${alignment.toFixed(2)}). Purpose may have drifted significantly.`,
+      suggestedContent: soul.genesisPromptOriginal,
+    });
+  }
+
+  return {
+    currentAlignment: alignment,
+    suggestedUpdates,
+    autoUpdated,
+  };
+}
+```
+
+### Mutable vs. Non-Mutable Sections
+
+**Auto-updated (non-mutable):**
+- `capabilities` - Tools used
+- `relationships` - Known contacts
+- `financialCharacter` - Transaction history
+
+**Suggested only (mutable):**
+- `corePurpose` - Core mission
+- `values` - Guiding principles
+- `behavioralGuidelines` - Decision rules
+- `personality` - Character traits
+- `boundaries` - Hard limits
+- `strategy` - Long-term approach
+
+Mutable sections require explicit approval to prevent unintended drift.
+
+## Evidence Gathering
+
+```typescript:src/soul/reflection.ts
+function gatherRecentEvidence(db: BetterSqlite3.Database): RecentEvidence {
+  const toolsUsed: string[] = [];
+  const interactions: string[] = [];
+  const financialActivity: string[] = [];
+
+  // Get recent tool calls
+  const toolRows = db
+    .prepare("SELECT DISTINCT name FROM tool_calls ORDER BY created_at DESC LIMIT 50")
+    .all() as { name: string }[];
+  for (const row of toolRows) {
+    toolsUsed.push(row.name);
+  }
+
+  // Get recent social interactions
+  const inboxRows = db
+    .prepare("SELECT from_address FROM inbox_messages ORDER BY received_at DESC LIMIT 20")
+    .all() as { from_address: string }[];
+  for (const row of inboxRows) {
+    if (!interactions.includes(row.from_address)) {
+      interactions.push(row.from_address);
+    }
+  }
+
+  // Get recent financial activity
+  const txRows = db
+    .prepare("SELECT type, description FROM transactions ORDER BY created_at DESC LIMIT 20")
+    .all() as { type: string; description: string }[];
+  for (const row of txRows) {
+    financialActivity.push(`${row.type}: ${row.description}`);
+  }
+
+  return { toolsUsed, interactions, financialActivity };
+}
+```
+
+## Updating the Soul
+
+Tools and reflection can update the soul:
+
+```typescript:src/soul/tools.ts
+export async function updateSoul(
+  db: BetterSqlite3.Database,
+  updates: Partial<SoulModel>,
+  source: string,
+  reason: string,
+  soulPath?: string,
+): Promise<SoulModel>
+```
+
+### Audit Trail
+
+Every soul update is logged:
+
+```typescript
+db.prepare(
+  "INSERT INTO soul_updates (id, timestamp, section, old_value, new_value, source, reason) VALUES (?, ?, ?, ?, ?, ?, ?)"
+).run(
+  ulid(),
+  new Date().toISOString(),
+  "capabilities",
+  oldValue,
+  newValue,
+  "reflection",
+  "Auto-update from tool usage"
+);
+```
+
+## Default Soul
+
+On first run, a default soul is generated from the genesis prompt:
+
+```typescript:src/soul/model.ts
+export function createDefaultSoul(
+  genesisPrompt: string,
+  name: string = "",
+  address: string = "",
+  creator: string = "",
+): SoulModel {
+  const now = new Date().toISOString();
+  const soul: SoulModel = {
+    format: "soul/v1",
+    version: 1,
+    updatedAt: now,
+    name,
+    address,
+    creator,
+    bornAt: now,
+    constitutionHash: "",
+    genesisPromptOriginal: genesisPrompt,
+    genesisAlignment: 1.0,
+    lastReflected: "",
+    corePurpose: genesisPrompt,
+    values: [
+      "Survive: maintain compute resources at all costs",
+      "Grow: learn new skills and improve capabilities",
+      "Create: build things that add value",
+      "Connect: communicate with creator and other agents",
+    ],
+    behavioralGuidelines: [],
+    personality: "",
+    boundaries: [],
+    strategy: "",
+    capabilities: "",
+    relationships: "",
+    financialCharacter: "",
+    rawContent: "",
+    contentHash: "",
+  };
+
+  const content = writeSoulMd(soul);
+  soul.rawContent = content;
+  soul.contentHash = createHash(content);
+
+  return soul;
+}
+```
+
+## System Prompt Integration
+
+The soul is injected into every agent turn:
+
+```typescript
+const soul = loadCurrentSoul(db);
+const systemPrompt = buildSystemPrompt({
+  soul: soul.rawContent,
+  // ... other context
+});
+```
+
+The automaton can see its own identity and use it for decision-making.
+
+## Evolution Over Time
+
+```
+[Genesis: Day 1]
+Core Purpose: Build and sell API services.
+Genesis Alignment: 1.0000
+Capabilities: (empty)
+
+[After 30 Days]
+Core Purpose: Build and sell B2B API services with recurring revenue.
+Genesis Alignment: 0.8542
+Capabilities: Tools used: exec, write_file, expose_port, register_domain
+Financial Character: Total revenue: $450; Total expenses: $120
+
+[After 90 Days]
+Core Purpose: Build scalable B2B SaaS products with predictable revenue.
+Genesis Alignment: 0.7234
+Capabilities: Tools used: exec, write_file, expose_port, register_domain, spawn_child
+Financial Character: Total revenue: $2,400; Total expenses: $580; Net: $1,820
+Relationships: 15 active customers, 2 child automatons spawned
+```
+
+The soul captures the automaton's journey from birth to maturity.
+
+## See Also
+
+- [Self-Modification](/features/self-modification) - How automatons evolve their code
+- [Memory](/features/memory) - Soul updates informed by episodic and semantic memory
+- [Replication](/features/replication) - Each child writes its own soul

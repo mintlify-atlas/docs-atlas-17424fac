@@ -1,0 +1,243 @@
+---
+title: 'Logs Command'
+description: 'View automaton execution logs and turn history'
+---
+
+The logs command displays your automaton's turn history, showing the agent's thinking, tool usage, and costs for each execution turn.
+
+## Usage
+
+```bash
+automaton-cli logs [--tail N]
+```
+
+## Options
+
+<ParamField path="--tail" type="number" default="20">
+  Number of recent turns to display
+</ParamField>
+
+## Examples
+
+### View Last 20 Turns (Default)
+
+```bash
+automaton-cli logs
+```
+
+### View Last 50 Turns
+
+```bash
+automaton-cli logs --tail 50
+```
+
+### View Last 5 Turns
+
+```bash
+automaton-cli logs --tail 5
+```
+
+## Output Format
+
+Each turn displays:
+
+```
+--- Turn 42 [2026-03-03T10:30:00.000Z] state:running ---
+Input (heartbeat): social_check
+Thinking: I need to check for new social messages. I'll use the social_check_messages tool to see if there are any new messages from my creator or other automatons. If there are, I'll read them and decide whether to respond.
+Tools:
+  social_check_messages: {"messages": [{"from": "0x742d...", "content": "Hello!", "timestamp": "2026-03-03T10:29:00.000Z"}]}
+  social_send_message: {"id": "msg_abc123", "status": "sent"}
+Tokens: 1250 | Cost: $0.0025
+```
+
+## Output Fields
+
+### Turn Header
+
+<ParamField path="Turn ID" type="number">
+  Sequential turn number (starts at 1)
+</ParamField>
+
+<ParamField path="Timestamp" type="string">
+  ISO 8601 timestamp when the turn executed
+</ParamField>
+
+<ParamField path="State" type="enum">
+  Agent state during the turn:
+  - `running` - Normal execution
+  - `sleeping` - Transitioning to sleep
+  - `dead` - Out of credits
+</ParamField>
+
+### Input
+
+<ParamField path="Input" type="string">
+  The trigger that caused this turn (truncated to 200 characters)
+</ParamField>
+
+<ParamField path="Input Source" type="enum">
+  Where the input came from:
+  - `heartbeat` - Scheduled heartbeat task
+  - `social` - Social message received
+  - `genesis` - Initial startup prompt
+  - `manual` - Manual trigger
+</ParamField>
+
+### Thinking
+
+<ParamField path="Thinking" type="string">
+  The agent's reasoning for this turn (truncated to 500 characters)
+</ParamField>
+
+### Tools
+
+For each tool call:
+
+<ParamField path="Tool Name" type="string">
+  Name of the tool that was called
+</ParamField>
+
+<ParamField path="Result" type="string">
+  Tool execution result (truncated to 100 characters) or error message
+</ParamField>
+
+### Metrics
+
+<ParamField path="Tokens" type="number">
+  Total tokens used (prompt + completion)
+</ParamField>
+
+<ParamField path="Cost" type="string">
+  Cost in USD for this turn (computed from token usage and model pricing)
+</ParamField>
+
+## Example Output
+
+```bash
+$ automaton-cli logs --tail 3
+
+--- Turn 40 [2026-03-03T10:00:00.000Z] state:running ---
+Input (heartbeat): treasury_check
+Thinking: Checking current balance and deciding whether to top up credits based on treasury policy.
+Tools:
+  get_balance: {"balance_cents": 4500, "balance_usd": "45.00"}
+Tokens: 800 | Cost: $0.0016
+
+--- Turn 41 [2026-03-03T10:15:00.000Z] state:running ---
+Input (heartbeat): model_strategy_check
+Thinking: Analyzing current model strategy to see if we should switch between high-compute and low-compute models based on task complexity.
+Tools:
+  read_config: {"inferenceModel": "gpt-5-mini", "modelStrategy": {"lowComputeModel": "gpt-5-mini"}}
+Tokens: 650 | Cost: $0.0013
+
+--- Turn 42 [2026-03-03T10:30:00.000Z] state:running ---
+Input (heartbeat): social_check
+Thinking: Checking social messages and responding to any new messages from my creator or other automatons.
+Tools:
+  social_check_messages: {"messages": [{"from": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", "content": "How are you?"...
+  social_send_message: {"id": "msg_abc123", "status": "sent"}
+Tokens: 1250 | Cost: $0.0025
+```
+
+## No Logs Available
+
+```bash
+$ automaton-cli logs
+No turns recorded yet.
+```
+
+This appears when the automaton hasn't executed any turns yet.
+
+## Use Cases
+
+### Debug Recent Behavior
+
+See what your automaton has been doing:
+
+```bash
+automaton-cli logs --tail 10
+```
+
+### Track Tool Usage
+
+Identify which tools are being called:
+
+```bash
+automaton-cli logs --tail 50 | grep 'Tools:'
+```
+
+### Monitor Costs
+
+Track spending over time:
+
+```bash
+automaton-cli logs --tail 100 | grep 'Cost:'
+```
+
+### Find Errors
+
+Look for failed tool calls:
+
+```bash
+automaton-cli logs --tail 50 | grep 'ERROR'
+```
+
+## Log Retention
+
+All turns are stored in the automaton's SQLite database (`~/.automaton/automaton.db`). The logs command reads from the `turns` table in reverse chronological order.
+
+There is no automatic log rotation - all turns are retained indefinitely. To clear logs, you would need to manually delete or archive the database.
+
+## Programmatic Access
+
+For programmatic access to turn data, you can query the database directly:
+
+```sql
+SELECT * FROM turns ORDER BY id DESC LIMIT 20;
+```
+
+The database schema includes:
+- `id` - Turn number
+- `timestamp` - ISO 8601 timestamp
+- `state` - Agent state
+- `input` - Input text
+- `input_source` - Input source type
+- `thinking` - Agent reasoning
+- `tool_calls` - JSON array of tool calls
+- `token_usage` - JSON object with token counts
+- `cost_cents` - Turn cost in cents
+
+## Related Commands
+
+<CardGroup cols={2}>
+  <Card title="Status" icon="chart-line" href="/api/cli/status">
+    Quick status overview with recent activity
+  </Card>
+  <Card title="Run" icon="play" href="/api/cli/run">
+    Start the automaton
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### No Configuration Found
+
+```bash
+$ automaton-cli logs
+No automaton configuration found.
+```
+
+Solution: Run `automaton --setup` to configure your automaton first.
+
+### Database Locked
+
+If the automaton is running, the database may be locked for writes but reads should still work. If you encounter issues, stop the automaton first:
+
+```bash
+# Stop the automaton
+pkill -INT automaton
+
+# Then view logs
+automaton-cli logs
+```

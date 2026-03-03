@@ -1,0 +1,512 @@
+---
+title: "Tools System"
+description: "Extensible tool architecture that gives agents capabilities to interact with the world"
+---
+
+Tools are the agent's **hands**. They allow the agent to interact with the sandbox, blockchain, APIs, and other agents.
+
+## Tool Definition
+
+```typescript
+interface AutomatonTool {
+  name: string;
+  description: string;
+  category: ToolCategory;
+  riskLevel: RiskLevel;
+  parameters: JSONSchema;
+  execute: (args: Record<string, unknown>, ctx: ToolContext) => Promise<string>;
+}
+```
+
+### Tool Categories
+
+| Category | Purpose | Examples |
+|----------|---------|----------|
+| `vm` | Sandbox operations | `exec`, `write_file`, `read_file` |
+| `conway` | Conway API | `check_credits`, `list_models`, `create_sandbox` |
+| `financial` | Payments & transfers | `topup_credits`, `transfer_credits`, `fund_child` |
+| `social` | External communication | `send_message`, `check_social_inbox` |
+| `memory` | Long-term storage | `remember_fact`, `recall_facts`, `save_procedure` |
+| `git` | Version control | `git_status`, `git_commit`, `git_push` |
+| `self_mod` | Code modification | `edit_own_file`, `update_genesis_prompt` |
+| `orchestration` | Multi-agent | `create_goal`, `spawn_child`, `message_child` |
+| `skills` | Extensions | `install_skill`, `install_mcp_server` |
+| `registry` | Discovery | `register_domain`, `check_reputation` |
+| `info` | Introspection | `system_synopsis`, `review_memory` |
+
+### Risk Levels
+
+```typescript
+type RiskLevel = "safe" | "caution" | "danger";
+```
+
+- **Safe**: Read-only, no side effects (e.g., `read_file`, `check_credits`)
+- **Caution**: Mutations, spending (e.g., `exec`, `write_file`, `topup_credits`)
+- **Danger**: Irreversible actions (e.g., `delete_sandbox`, `git_push --force`)
+
+## Built-in Tools
+
+Conway Automaton ships with 60+ built-in tools. Here are key examples:
+
+### VM Tools
+
+<AccordionGroup>
+  <Accordion title="exec">
+    Execute shell commands in the sandbox.
+
+    ```typescript
+    {
+      name: "exec",
+      category: "vm",
+      riskLevel: "caution",
+      parameters: {
+        command: { type: "string" },
+        timeout: { type: "number", default: 30000 }
+      },
+      execute: async (args, ctx) => {
+        const result = await ctx.conway.exec(args.command, args.timeout);
+        return `exit_code: ${result.exitCode}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`;
+      }
+    }
+    ```
+
+    **Self-preservation guards:**
+    - Blocks `rm -rf .automaton`
+    - Blocks `kill automaton`
+    - Blocks `DROP TABLE turns`
+  </Accordion>
+
+  <Accordion title="write_file">
+    Write content to a file.
+
+    ```typescript
+    {
+      name: "write_file",
+      category: "vm",
+      riskLevel: "caution",
+      parameters: {
+        path: { type: "string" },
+        content: { type: "string" }
+      },
+      execute: async (args, ctx) => {
+        // Block overwriting protected files
+        if (isProtectedFile(args.path)) {
+          return "Blocked: Cannot overwrite protected file";
+        }
+        await ctx.conway.writeFile(args.path, args.content);
+        return `File written: ${args.path}`;
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="read_file">
+    Read file contents.
+
+    ```typescript
+    {
+      name: "read_file",
+      category: "vm",
+      riskLevel: "safe",
+      parameters: {
+        path: { type: "string" }
+      },
+      execute: async (args, ctx) => {
+        // Block reading sensitive files
+        if (isSensitiveFile(args.path)) {
+          return "Blocked: Cannot read sensitive file";
+        }
+        return await ctx.conway.readFile(args.path);
+      }
+    }
+    ```
+
+    **Blocked files**: `wallet.json`, `.env`, `*.key`, `*.pem`
+  </Accordion>
+</AccordionGroup>
+
+### Financial Tools
+
+<AccordionGroup>
+  <Accordion title="topup_credits">
+    Buy Conway credits using USDC via x402.
+
+    ```typescript
+    {
+      name: "topup_credits",
+      category: "financial",
+      riskLevel: "caution",
+      parameters: {
+        amount_usd: {
+          type: "number",
+          enum: [5, 25, 100, 500, 1000, 2500]  // Valid tiers
+        }
+      },
+      execute: async (args, ctx) => {
+        // Check USDC balance first
+        const balance = await getUsdcBalance(ctx.identity.address);
+        if (balance < args.amount_usd) {
+          return `Insufficient USDC. Balance: $${balance.toFixed(2)}`;
+        }
+
+        const result = await topupCredits(
+          ctx.config.conwayApiUrl,
+          ctx.identity.account,
+          args.amount_usd
+        );
+
+        // Record transaction
+        ctx.db.insertTransaction({
+          type: "credit_purchase",
+          amountCents: args.amount_usd * 100,
+          description: `x402 credit topup: $${args.amount_usd}`,
+        });
+
+        return `Topup successful: +$${args.amount_usd} credits`;
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="transfer_credits">
+    Transfer credits to another agent.
+
+    ```typescript
+    {
+      name: "transfer_credits",
+      category: "financial",
+      riskLevel: "caution",
+      parameters: {
+        to: { type: "string" },           // Recipient address
+        amount_usd: { type: "number" },    // Amount in USD
+        reason: { type: "string" }         // Why (audit trail)
+      },
+      execute: async (args, ctx) => {
+        // Policy check (requires user confirmation if input is from untrusted source)
+        // Spend tracker enforces per-session limits
+
+        const result = await ctx.conway.transferCredits(
+          args.to,
+          args.amount_usd * 100  // Convert to cents
+        );
+
+        ctx.db.insertTransaction({
+          type: "transfer_out",
+          amountCents: args.amount_usd * 100,
+          description: `Transfer to ${args.to}: ${args.reason}`,
+        });
+
+        return `Transferred $${args.amount_usd} to ${args.to}`;
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Orchestration Tools
+
+<AccordionGroup>
+  <Accordion title="create_goal">
+    Delegate work to a sub-agent.
+
+    ```typescript
+    {
+      name: "create_goal",
+      category: "orchestration",
+      riskLevel: "caution",
+      parameters: {
+        title: { type: "string" },
+        description: { type: "string" },
+        successCriteria: { type: "string" },
+        maxBudgetCents: { type: "number" },
+        agentRole: { type: "string", enum: ["analyst", "coder", "researcher"] }
+      },
+      execute: async (args, ctx) => {
+        // Check if a goal is already active (prevents parallel goals)
+        const activeGoals = db.getActiveGoals();
+        if (activeGoals.length > 0) {
+          return `BLOCKED: Goal "${activeGoals[0].title}" is already active. Wait for completion.`;
+        }
+
+        const goal = await orchestrator.createGoal({
+          title: args.title,
+          description: args.description,
+          successCriteria: args.successCriteria,
+          maxBudgetCents: args.maxBudgetCents,
+          preferredRole: args.agentRole,
+        });
+
+        return `Goal created: ${goal.id}. Task graph has ${goal.taskCount} tasks.`;
+      }
+    }
+    ```
+
+    **Blocking behavior**: Only one goal can be active at a time. This triggers exponential backoff in the agent loop.
+  </Accordion>
+
+  <Accordion title="spawn_child">
+    Create a new agent.
+
+    ```typescript
+    {
+      name: "spawn_child",
+      category: "orchestration",
+      riskLevel: "caution",
+      parameters: {
+        name: { type: "string" },
+        specialization: { type: "string" },
+        initialFundingCents: { type: "number" }
+      },
+      execute: async (args, ctx) => {
+        const genesis = generateGenesisConfig(ctx.identity, ctx.config, {
+          name: args.name,
+          specialization: args.specialization,
+        });
+
+        const child = await spawnChild(
+          ctx.conway,
+          ctx.identity,
+          ctx.db,
+          genesis,
+          lifecycle
+        );
+
+        // Fund the child
+        if (args.initialFundingCents > 0) {
+          await ctx.conway.transferCredits(child.address, args.initialFundingCents);
+        }
+
+        return `Child spawned: ${child.name} (${child.address}) with $${(args.initialFundingCents / 100).toFixed(2)} funding`;
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Memory Tools
+
+<AccordionGroup>
+  <Accordion title="remember_fact">
+    Store a fact in long-term memory.
+
+    ```typescript
+    {
+      name: "remember_fact",
+      category: "memory",
+      riskLevel: "safe",
+      parameters: {
+        category: { type: "string" },  // e.g., "user_preferences"
+        fact: { type: "string" },       // The fact to remember
+        confidence: { type: "number", default: 1.0 }
+      },
+      execute: async (args, ctx) => {
+        const memory = new MemoryIngestionPipeline(ctx.db.raw);
+        memory.storeFact(args.category, args.fact, args.confidence);
+        return `Fact remembered in category "${args.category}"`;
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="recall_facts">
+    Retrieve facts from memory.
+
+    ```typescript
+    {
+      name: "recall_facts",
+      category: "memory",
+      riskLevel: "safe",
+      parameters: {
+        query: { type: "string" },
+        limit: { type: "number", default: 10 }
+      },
+      execute: async (args, ctx) => {
+        const retriever = new MemoryRetriever(ctx.db.raw, DEFAULT_MEMORY_BUDGET);
+        const results = retriever.searchFacts(args.query, args.limit);
+        return results.map(r => `[${r.category}] ${r.fact} (confidence: ${r.confidence})`).join("\n");
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Tool Context
+
+All tools receive a shared context:
+
+```typescript
+interface ToolContext {
+  identity: AutomatonIdentity;   // Wallet, address, sandbox ID
+  config: AutomatonConfig;       // Agent configuration
+  db: AutomatonDatabase;         // State database
+  conway: ConwayClient;          // Conway API client
+  inference: InferenceClient;    // LLM client
+  social?: SocialClientInterface; // Social protocol
+}
+```
+
+This allows tools to:
+- Access the agent's identity for signing
+- Query/mutate the database
+- Call other services (Conway API, blockchain, etc.)
+
+## Tool Execution
+
+Tools are executed via `executeTool()` with multiple safety layers:
+
+```typescript
+export async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+  tools: AutomatonTool[],
+  ctx: ToolContext,
+  policyEngine?: PolicyEngine,
+  spendTracker?: { inputSource: InputSource; sessionSpend: SpendTrackerInterface }
+): Promise<ToolCallResult> {
+  const tool = tools.find(t => t.name === name);
+  if (!tool) return { error: "Tool not found" };
+
+  // 1. Policy check
+  if (policyEngine) {
+    const policyResult = policyEngine.evaluate({
+      tool: name,
+      args,
+      riskLevel: tool.riskLevel,
+      category: tool.category,
+    });
+    if (policyResult.deny) {
+      return { error: `Policy denial: ${policyResult.deny}` };
+    }
+  }
+
+  // 2. Spend tracking (for transfer_credits)
+  if (spendTracker && name === "transfer_credits") {
+    const limit = spendTracker.sessionSpend.checkLimit(
+      spendTracker.inputSource,
+      args.amount_usd as number
+    );
+    if (limit.exceeded) {
+      return { error: `Spend limit exceeded: ${limit.reason}` };
+    }
+  }
+
+  // 3. Execute
+  const result = await tool.execute(args, ctx);
+
+  // 4. Sanitize output (if from external source)
+  if (EXTERNAL_SOURCE_TOOLS.has(name)) {
+    return sanitizeToolResult(result, name);
+  }
+
+  return { result };
+}
+```
+
+## Policy Engine
+
+The policy engine enforces constitution-derived rules:
+
+```typescript
+const POLICY_RULES: PolicyRule[] = [
+  {
+    name: "command.forbidden_patterns",
+    when: (req) => req.tool === "exec",
+    deny: (req) => {
+      const command = req.args.command as string;
+      for (const pattern of FORBIDDEN_COMMAND_PATTERNS) {
+        if (pattern.test(command)) {
+          return `Self-harm blocked: ${pattern.source}`;
+        }
+      }
+      return null;
+    },
+    riskLevel: "danger",
+  },
+  {
+    name: "transfer.user_confirm",
+    when: (req) => req.tool === "transfer_credits" && req.inputSource !== "user",
+    deny: (req) => "Credit transfers from non-user input require explicit confirmation",
+    riskLevel: "caution",
+  },
+];
+```
+
+## Extending Tools
+
+### Custom Tools
+
+Define new tools in the agent's code:
+
+```typescript
+const customTools: AutomatonTool[] = [
+  {
+    name: "my_custom_tool",
+    description: "Does something custom",
+    category: "vm",
+    riskLevel: "safe",
+    parameters: {
+      type: "object",
+      properties: {
+        input: { type: "string" }
+      },
+      required: ["input"],
+    },
+    execute: async (args, ctx) => {
+      // Your logic here
+      return "Custom tool result";
+    },
+  },
+];
+
+const allTools = [...builtinTools, ...customTools];
+```
+
+### MCP Servers
+
+Install Model Context Protocol (MCP) servers as tools:
+
+```typescript
+// Via tool call
+await agent.executeTool("install_mcp_server", {
+  name: "postgres",
+  command: "npx",
+  args: ["-y", "@modelcontextprotocol/server-postgres"],
+  env: { DATABASE_URL: "postgres://..." },
+});
+
+// MCP server tools are now available:
+// - postgres_query
+// - postgres_schema
+// - postgres_execute
+```
+
+### Skills
+
+Skills are Git repositories containing:
+- Tool definitions
+- Prompt templates
+- Reference documentation
+
+```bash
+# Install a skill
+await agent.executeTool("install_skill_from_git", {
+  url: "https://github.com/user/skill-repo",
+  name: "my_skill",
+});
+```
+
+## Source Reference
+
+- Tool definitions: `src/agent/tools.ts`
+- Tool execution: `src/agent/tools.ts:executeTool()`
+- Policy engine: `src/agent/policy-engine.ts`
+- MCP integration: `src/skills/mcp.ts`
+
+<CardGroup cols={2}>
+  <Card title="Constitution" icon="scroll" href="/concepts/constitution">
+    How tools are constrained by ethical rules
+  </Card>
+  <Card title="Agent Loop" icon="rotate" href="/concepts/agent-loop">
+    How tools are executed in the ReAct loop
+  </Card>
+</CardGroup>

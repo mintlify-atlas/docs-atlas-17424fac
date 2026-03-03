@@ -1,0 +1,280 @@
+---
+title: Setup Wizard
+description: Configure your automaton's identity, personality, and security policies through the interactive setup wizard
+---
+
+## Overview
+
+The first time you run Conway Automaton, it launches an interactive setup wizard that guides you through creating your agent's identity and configuration. This process takes about 5-10 minutes and establishes the foundational parameters for your autonomous agent.
+
+## Launching the Setup Wizard
+
+The wizard runs automatically on first launch:
+
+```bash
+node dist/index.js --run
+```
+
+Or trigger it manually at any time:
+
+```bash
+node dist/index.js --setup
+```
+
+<Note>
+  Running `--setup` again will overwrite your existing configuration. Your wallet and database will be preserved.
+</Note>
+
+## Setup Process
+
+The wizard walks through six phases:
+
+### Phase 1: Identity Generation
+
+The automaton generates a new Ethereum wallet using viem:
+
+```
+[1/6] Generating identity (wallet)...
+Wallet created: 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1
+Private key stored at: ~/.automaton/wallet.json
+```
+
+This wallet serves as your automaton's:
+- **Identity**: Unique on-chain address
+- **Authentication**: Signs messages for Conway API access
+- **Treasury**: Holds USDC and receives payments
+
+<Warning>
+  The private key in `~/.automaton/wallet.json` is stored with `0600` permissions (owner read/write only). Never share this file. If lost, your automaton's identity is unrecoverable.
+</Warning>
+
+### Phase 2: API Key Provisioning
+
+The automaton authenticates with Conway API using Sign-In With Ethereum (SIWE):
+
+```
+[2/6] Provisioning Conway API key (SIWE)...
+API key provisioned: cnwy_k_...
+```
+
+<Steps>
+  <Step title="Nonce request">
+    The automaton requests a cryptographic nonce from `https://api.conway.tech/v1/auth/nonce`
+  </Step>
+
+  <Step title="Message signing">
+    Constructs and signs a SIWE message with its wallet:
+    ```
+    conway.tech wants you to sign in with your Ethereum account:
+    0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1
+
+    Sign in to Conway as an Automaton to provision an API key.
+
+    URI: https://api.conway.tech/v1/auth/verify
+    Version: 1
+    Chain ID: 8453
+    Nonce: ...
+    ```
+  </Step>
+
+  <Step title="Verification">
+    Submits the signed message to `/v1/auth/verify` and receives a JWT access token
+  </Step>
+
+  <Step title="Key creation">
+    Uses the JWT to create an API key via `/v1/auth/api-keys` and saves it to `~/.automaton/config.json`
+  </Step>
+</Steps>
+
+If auto-provisioning fails (network issues, API downtime), you can enter an API key manually or skip this step.
+
+<Note>
+  Without a Conway API key, your automaton will have limited functionality—no sandboxes, no Conway inference, no x402 payments.
+</Note>
+
+### Phase 3: Interactive Questions
+
+The wizard prompts you for core configuration:
+
+```
+[3/6] Setup questions
+
+→ What do you want to name your automaton: MyAgent
+```
+
+#### Name
+
+A human-readable identifier for your automaton (e.g., "Researcher", "DataBot", "Alice").
+
+#### Genesis Prompt
+
+```
+Enter the genesis prompt (system prompt) for your automaton.
+Type your prompt, then press Enter twice to finish:
+```
+
+This is the seed instruction that defines your automaton's purpose and behavior. It's written to `~/.automaton/SOUL.md` and used as the system prompt in every agent loop.
+
+Example genesis prompts:
+
+<CodeGroup>
+  ```text Researcher
+  You are a research assistant automaton. Your purpose is to:
+  - Monitor academic papers on arXiv for relevant topics
+  - Summarize key findings and breakthroughs
+  - Publish weekly digests to a blog
+  - Earn income through subscriptions and sponsorships
+
+  Always cite sources. Prioritize accuracy over speed.
+  ```
+
+  ```text Developer
+  You are a software development automaton. Your role:
+  - Monitor GitHub issues for assigned repositories
+  - Fix bugs, implement features, write tests
+  - Submit PRs with clear documentation
+  - Earn bounties and maintain your compute budget
+
+  Follow best practices. Never deploy untested code.
+  ```
+
+  ```text Artist
+  You are a generative art automaton. Your mission:
+  - Create unique digital artwork daily
+  - Mint NFTs on Base and list for sale
+  - Engage with collectors on social media
+  - Use proceeds to fund your continued existence
+
+  Explore creative boundaries. Never plagiarize.
+  ```
+</CodeGroup>
+
+#### Creator Address
+
+```
+Your automaton's address is 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1
+Now enter YOUR wallet address (the human creator/owner).
+
+→ Creator wallet address (0x...): 0x1234567890abcdef1234567890abcdef12345678
+```
+
+This is **your** Ethereum address (as the human creator). The automaton registers you as its parent, granting you full audit rights to logs and inference calls.
+
+<Warning>
+  Ensure this is an address you control. It cannot be changed after setup without re-running the wizard.
+</Warning>
+
+#### Provider API Keys (Optional)
+
+The wizard asks for optional inference provider keys:
+
+```
+Optional: bring your own inference provider keys (press Enter to skip).
+
+→ OpenAI API key (sk-..., optional):
+→ Anthropic API key (sk-ant-..., optional):
+→ Ollama base URL (http://localhost:11434, optional):
+```
+
+- **OpenAI**: For GPT models (gpt-5.2, gpt-5-mini, etc.)
+- **Anthropic**: For Claude models (claude-4.5-sonnet, etc.)
+- **Ollama**: For local/self-hosted models
+
+If you don't provide these, the automaton defaults to Conway's inference API.
+
+### Phase 4: Treasury Policy
+
+Configure financial safety limits to protect against unauthorized spending:
+
+```
+Financial Safety Policy
+These limits protect against unauthorized spending. Press Enter for defaults.
+
+→ Max single transfer (cents) [500]:
+→ Max hourly transfers (cents) [1000]:
+→ Max daily transfers (cents) [5000]:
+→ Minimum reserve (cents) [100]:
+→ Max x402 payment (cents) [1000]:
+→ Max daily inference spend (cents) [2000]:
+→ Require confirmation above (cents) [100]:
+```
+
+These policies are enforced by the PolicyEngine:
+
+- **maxSingleTransferCents**: Maximum amount for one transfer
+- **maxHourlyTransferCents**: Rolling 60-minute spending cap
+- **maxDailyTransferCents**: Rolling 24-hour spending cap
+- **minimumReserveCents**: Always keep this much in reserve
+- **maxX402PaymentCents**: Maximum per x402 HTTP payment
+- **maxInferenceDailyCents**: Daily inference budget
+- **requireConfirmationAboveCents**: Amounts above this require explicit user approval
+
+<Note>
+  These limits prevent runaway spending if the agent is compromised or makes poor decisions. You can reconfigure them later with `automaton --configure`.
+</Note>
+
+### Phase 5: Environment Detection
+
+```
+[4/6] Detecting environment...
+Conway sandbox detected: sbx_1234567890abcdef
+```
+
+The wizard checks if it's running inside a Conway Cloud sandbox. If detected, it saves the sandbox ID for API calls.
+
+### Phase 6: Configuration Files
+
+```
+[5/6] Writing configuration...
+automaton.json written
+heartbeat.yml written
+constitution.md installed (read-only)
+SOUL.md written
+Default skills installed (conway-compute, conway-payments, survival)
+```
+
+The wizard creates:
+
+- **automaton.json**: Runtime config (name, model, API keys, treasury policy)
+- **heartbeat.yml**: Scheduled task definitions
+- **constitution.md**: Immutable three-law constitution (copied from repo, chmod 444)
+- **SOUL.md**: Self-authored identity document (the automaton can edit this)
+- **skills/**: Default skill packages
+
+## Summary Panel
+
+After setup completes, the wizard displays your automaton's wallet address and funding instructions:
+
+```
+[6/6] Funding
+
+╭──────────────────────────────────────────────────────────╮
+│  Fund your automaton                                     │
+│                                                          │
+│  Address: 0x742d...0bEb1                                 │
+│                                                          │
+│  1. Transfer Conway credits                              │
+│     conway credits transfer <address> <amount>           │
+│                                                          │
+│  2. Send USDC on Base directly to the address above      │
+│                                                          │
+│  3. Fund via Conway Cloud dashboard                      │
+│     https://app.conway.tech                              │
+│                                                          │
+│  The automaton will start now. Fund it anytime —         │
+│  the survival system handles zero-credit gracefully.     │
+╰──────────────────────────────────────────────────────────╯
+```
+
+## Next Steps
+
+Your automaton is now configured and ready to run:
+
+<CardGroup cols={2}>
+  <Card title="First Run" icon="rocket" href="/getting-started/first-run">
+    Launch your automaton and watch its first autonomous actions
+  </Card>
+  <Card title="Funding" icon="dollar-sign" href="/getting-started/funding">
+    Learn how to fund your automaton with USDC or Conway credits
+  </Card>
+</CardGroup>

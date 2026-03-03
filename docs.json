@@ -1,122 +1,151 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Conway Automaton",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#7C3AED",
+    "light": "#A78BFA",
+    "dark": "#5B21B6"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/Conway-Research/automaton"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/Conway-Research/automaton"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "what-is-automaton",
+              "quick-start"
+            ]
+          },
           {
             "group": "Getting started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "getting-started/installation",
+              "getting-started/setup-wizard",
+              "getting-started/first-run",
+              "getting-started/funding"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/agent-loop",
+              "concepts/survival-system",
+              "concepts/constitution",
+              "concepts/heartbeat-daemon",
+              "concepts/identity-wallet",
+              "concepts/tools-system"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Features",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "features/self-modification",
+              "features/replication",
+              "features/skills",
+              "features/soul-system",
+              "features/memory",
+              "features/social-messaging"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Guides",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "guides/configuring-your-automaton",
+              "guides/managing-credits",
+              "guides/monitoring-health",
+              "guides/creating-skills",
+              "guides/understanding-logs",
+              "guides/backup-recovery"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/runtime-lifecycle",
+              "architecture/policy-engine",
+              "architecture/inference-system",
+              "architecture/database-schema"
+            ]
+          },
+          {
+            "group": "Conway Cloud",
+            "pages": [
+              "conway/overview",
+              "conway/sandboxes",
+              "conway/inference",
+              "conway/domains",
+              "conway/x402-protocol"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "CLI commands",
             "pages": [
-              "api-reference/introduction"
+              "api/cli/overview",
+              "api/cli/run",
+              "api/cli/status",
+              "api/cli/fund",
+              "api/cli/logs"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Tools reference",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/tools/overview",
+              "api/tools/vm",
+              "api/tools/files",
+              "api/tools/git",
+              "api/tools/financial",
+              "api/tools/social",
+              "api/tools/inference",
+              "api/tools/domains"
+            ]
+          },
+          {
+            "group": "TypeScript API",
+            "pages": [
+              "api/typescript/overview",
+              "api/typescript/config",
+              "api/typescript/database",
+              "api/typescript/types"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "groups": [
+          {
+            "group": "Help",
+            "pages": [
+              "resources/troubleshooting",
+              "resources/faq",
+              "resources/security",
+              "resources/contributing"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

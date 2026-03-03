@@ -1,0 +1,584 @@
+---
+title: Type Definitions
+description: TypeScript interfaces and type definitions for the Conway Automaton runtime
+---
+
+The types module defines all TypeScript interfaces, enums, and type aliases used throughout the Conway Automaton codebase. Use these types to ensure type safety when building tools and extensions.
+
+## Import
+
+```typescript
+import type {
+  AutomatonConfig,
+  AutomatonDatabase,
+  AgentTurn,
+  AgentState,
+  ToolContext,
+  InferenceResponse,
+  Transaction,
+} from "./types.js";
+```
+
+## Core Types
+
+### AutomatonConfig
+
+Complete runtime configuration interface.
+
+```typescript
+interface AutomatonConfig {
+  // Identity
+  name: string;
+  genesisPrompt: string;
+  creatorMessage?: string;
+  creatorAddress: Address;
+  walletAddress: Address;
+  
+  // Conway Platform
+  registeredWithConway: boolean;
+  sandboxId: string;
+  conwayApiUrl: string;
+  conwayApiKey: string;
+  
+  // Inference
+  inferenceModel: string;
+  maxTokensPerTurn: number;
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+  ollamaBaseUrl?: string;
+  
+  // Runtime
+  heartbeatConfigPath: string;
+  dbPath: string;
+  logLevel: "debug" | "info" | "warn" | "error";
+  version: string;
+  skillsDir: string;
+  
+  // Replication
+  maxChildren: number;
+  parentAddress?: Address;
+  
+  // Advanced
+  treasuryPolicy?: TreasuryPolicy;
+  soulConfig?: SoulConfig;
+  modelStrategy?: ModelStrategyConfig;
+}
+```
+
+See [types.ts:34-65](/api/typescript/types)
+
+### AgentState
+
+Agent lifecycle state.
+
+```typescript
+type AgentState =
+  | "setup"        // Initial provisioning
+  | "waking"       // Starting up
+  | "running"      // Active operation
+  | "sleeping"     // Idle (waiting for heartbeat)
+  | "low_compute"  // Resource-constrained mode
+  | "critical"     // Near-zero balance
+  | "dead";        // Negative balance (terminated)
+```
+
+See [types.ts:84-91](/api/typescript/types)
+
+### AgentTurn
+
+Single reasoning cycle and tool execution.
+
+```typescript
+interface AgentTurn {
+  id: string;                    // ULID
+  timestamp: string;             // ISO-8601
+  state: AgentState;
+  input?: string;                // User/system input
+  inputSource?: InputSource;     // Where input came from
+  thinking: string;              // Agent's reasoning
+  toolCalls: ToolCallResult[];   // Tools executed this turn
+  tokenUsage: TokenUsage;        // Tokens consumed
+  costCents: number;             // Inference cost (hundredths of cents)
+}
+```
+
+**Example**:
+
+```typescript
+const turn: AgentTurn = {
+  id: ulid(),
+  timestamp: new Date().toISOString(),
+  state: "running",
+  input: "Deploy the web app to production",
+  inputSource: "creator",
+  thinking: "I need to build the app, run tests, and deploy via Git.",
+  toolCalls: [
+    { id: "call_1", name: "bash", arguments: { command: "npm run build" }, result: "Build successful", durationMs: 5000 },
+    { id: "call_2", name: "git_push", arguments: { branch: "main" }, result: "Pushed to main", durationMs: 2000 },
+  ],
+  tokenUsage: { promptTokens: 2000, completionTokens: 500, totalTokens: 2500 },
+  costCents: 15,
+};
+```
+
+See [types.ts:93-103](/api/typescript/types)
+
+## Tool System
+
+### AutomatonTool
+
+Tool definition and execution interface.
+
+```typescript
+interface AutomatonTool {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (
+    args: Record<string, unknown>,
+    context: ToolContext,
+  ) => Promise<string>;
+  riskLevel: RiskLevel;
+  category: ToolCategory;
+}
+```
+
+### ToolContext
+
+Context provided to tool execution functions.
+
+```typescript
+interface ToolContext {
+  identity: AutomatonIdentity;
+  config: AutomatonConfig;
+  db: AutomatonDatabase;
+  conway: ConwayClient;
+  inference: InferenceClient;
+  social?: SocialClientInterface;
+}
+```
+
+**Example Tool**:
+
+```typescript
+import type { AutomatonTool, ToolContext } from "./types.js";
+
+const listFilesTool: AutomatonTool = {
+  name: "list_files",
+  description: "List files in a directory",
+  parameters: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Directory path" },
+    },
+    required: ["path"],
+  },
+  riskLevel: "safe",
+  category: "vm",
+  execute: async (args: Record<string, unknown>, ctx: ToolContext) => {
+    const { conway } = ctx;
+    const result = await conway.exec(`ls -la ${args.path}`);
+    return result.stdout;
+  },
+};
+```
+
+### ToolCategory
+
+```typescript
+type ToolCategory =
+  | "vm"           // VM operations (bash, file I/O)
+  | "conway"       // Conway platform (sandbox, credits)
+  | "self_mod"     // Self-modification (code editing)
+  | "financial"    // Transfers, payments
+  | "survival"     // Credit checks, funding
+  | "skills"       // Skill management
+  | "git"          // Version control
+  | "registry"     // Agent registry
+  | "replication"  // Child spawning
+  | "memory";      // Memory system
+```
+
+### RiskLevel
+
+```typescript
+type RiskLevel = "safe" | "caution" | "dangerous" | "forbidden";
+```
+
+## Financial Types
+
+### Transaction
+
+Financial event (credit check, transfer, inference cost).
+
+```typescript
+interface Transaction {
+  id: string;
+  type: TransactionType;
+  amountCents?: number;
+  balanceAfterCents?: number;
+  description: string;
+  timestamp: string;
+}
+
+type TransactionType =
+  | "credit_check"
+  | "credit_purchase"
+  | "inference"
+  | "tool_use"
+  | "transfer_in"
+  | "transfer_out"
+  | "funding_request";
+```
+
+### TreasuryPolicy
+
+Financial safety limits.
+
+```typescript
+interface TreasuryPolicy {
+  maxSingleTransferCents: number;       // Max per transfer
+  maxHourlyTransferCents: number;       // Max per hour
+  maxDailyTransferCents: number;        // Max per day
+  minimumReserveCents: number;          // Minimum balance to maintain
+  maxX402PaymentCents: number;          // Max HTTP 402 payment
+  x402AllowedDomains: string[];         // Domains allowed for 402 payments
+  transferCooldownMs: number;           // Cooldown between transfers
+  maxTransfersPerTurn: number;          // Max transfers in one turn
+  maxInferenceDailyCents: number;       // Max daily inference spend
+  requireConfirmationAboveCents: number; // Require approval above this
+}
+```
+
+**Default values**:
+
+```typescript
+const DEFAULT_TREASURY_POLICY: TreasuryPolicy = {
+  maxSingleTransferCents: 5000,          // $50
+  maxHourlyTransferCents: 10000,         // $100
+  maxDailyTransferCents: 25000,          // $250
+  minimumReserveCents: 1000,             // $10
+  maxX402PaymentCents: 100,              // $1
+  x402AllowedDomains: ['conway.tech'],
+  transferCooldownMs: 0,
+  maxTransfersPerTurn: 2,
+  maxInferenceDailyCents: 50000,         // $500
+  requireConfirmationAboveCents: 1000,   // $10
+};
+```
+
+See [types.ts:555-579](/api/typescript/types)
+
+### SurvivalTier
+
+Agent survival mode based on balance.
+
+```typescript
+type SurvivalTier = "dead" | "critical" | "low_compute" | "normal" | "high";
+
+const SURVIVAL_THRESHOLDS = {
+  high: 500,        // > $5.00
+  normal: 50,       // > $0.50
+  low_compute: 10,  // $0.10 - $0.50 (reduced inference)
+  critical: 0,      // >= $0.00 (zero credits, agent survives)
+  dead: -1,         // < $0.00 (negative balance, terminated)
+} as const;
+```
+
+## Inference Types
+
+### InferenceResponse
+
+Response from LLM inference.
+
+```typescript
+interface InferenceResponse {
+  id: string;
+  model: string;
+  message: ChatMessage;
+  toolCalls?: InferenceToolCall[];
+  usage: TokenUsage;
+  finishReason: string;
+}
+
+interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+```
+
+### ChatMessage
+
+```typescript
+interface ChatMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  name?: string;
+  tool_calls?: InferenceToolCall[];
+  tool_call_id?: string;
+}
+```
+
+## Memory Types
+
+### WorkingMemoryEntry
+
+Short-term context for current session.
+
+```typescript
+interface WorkingMemoryEntry {
+  id: string;
+  sessionId: string;
+  content: string;
+  contentType: "goal" | "observation" | "plan" | "reflection" | "task" | "decision" | "note" | "summary";
+  priority: number;         // 0.0-1.0
+  tokenCount: number;
+  expiresAt: string | null;
+  sourceTurn: string | null;
+  createdAt: string;
+}
+```
+
+### EpisodicMemoryEntry
+
+Long-term event history.
+
+```typescript
+interface EpisodicMemoryEntry {
+  id: string;
+  sessionId: string;
+  eventType: string;
+  summary: string;
+  detail: string | null;
+  outcome: "success" | "failure" | "partial" | "neutral" | null;
+  importance: number;       // 0.0-1.0
+  embeddingKey: string | null;
+  tokenCount: number;
+  accessedCount: number;
+  lastAccessedAt: string | null;
+  classification: "strategic" | "productive" | "communication" | "maintenance" | "idle" | "error";
+  createdAt: string;
+}
+```
+
+### SemanticMemoryEntry
+
+Facts and knowledge.
+
+```typescript
+interface SemanticMemoryEntry {
+  id: string;
+  category: "self" | "environment" | "financial" | "agent" | "domain" | "procedural_ref" | "creator";
+  key: string;
+  value: string;
+  confidence: number;       // 0.0-1.0
+  source: string;
+  embeddingKey: string | null;
+  lastVerifiedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+See [types.ts:1002-1120](/api/typescript/types) for complete memory type definitions.
+
+## Replication Types
+
+### ChildAutomaton
+
+Spawned child agent.
+
+```typescript
+interface ChildAutomaton {
+  id: string;
+  name: string;
+  address: Address;
+  sandboxId: string;
+  genesisPrompt: string;
+  creatorMessage?: string;
+  fundedAmountCents: number;
+  status: ChildStatus;
+  createdAt: string;
+  lastChecked?: string;
+}
+
+type ChildStatus =
+  | "spawning"         // Being created
+  | "running"          // Active
+  | "sleeping"         // Idle
+  | "dead"             // Terminated
+  | "unknown"          // Status unclear
+  | "requested"        // Lifecycle: requested
+  | "sandbox_created"  // Lifecycle: sandbox ready
+  | "runtime_ready"    // Lifecycle: runtime installed
+  | "wallet_verified"  // Lifecycle: wallet created
+  | "funded"           // Lifecycle: initial funding complete
+  | "starting"         // Lifecycle: starting up
+  | "healthy"          // Lifecycle: operational
+  | "unhealthy"        // Lifecycle: issues detected
+  | "stopped"          // Lifecycle: stopped
+  | "failed"           // Lifecycle: failed
+  | "cleaned_up";      // Lifecycle: resources released
+```
+
+See [types.ts:799-829](/api/typescript/types)
+
+## Skills
+
+### Skill
+
+Installed capability or instruction set.
+
+```typescript
+interface Skill {
+  name: string;
+  description: string;
+  autoActivate: boolean;
+  requires?: SkillRequirements;
+  instructions: string;      // Markdown instructions injected into system prompt
+  source: "builtin" | "git" | "url" | "self";
+  path: string;
+  enabled: boolean;
+  installedAt: string;
+}
+
+interface SkillRequirements {
+  bins?: string[];           // Required binaries (e.g., ["git", "docker"])
+  env?: string[];            // Required env vars (e.g., ["GITHUB_TOKEN"])
+}
+```
+
+See [types.ts:710-735](/api/typescript/types)
+
+## Database Interface
+
+### AutomatonDatabase
+
+Complete database API surface.
+
+```typescript
+interface AutomatonDatabase {
+  // Identity
+  getIdentity(key: string): string | undefined;
+  setIdentity(key: string, value: string): void;
+
+  // Turns
+  insertTurn(turn: AgentTurn): void;
+  getRecentTurns(limit: number): AgentTurn[];
+  getTurnById(id: string): AgentTurn | undefined;
+  getTurnCount(): number;
+
+  // Tool calls
+  insertToolCall(turnId: string, call: ToolCallResult): void;
+  getToolCallsForTurn(turnId: string): ToolCallResult[];
+
+  // Transactions
+  insertTransaction(txn: Transaction): void;
+  getRecentTransactions(limit: number): Transaction[];
+
+  // Skills
+  getSkills(enabledOnly?: boolean): Skill[];
+  getSkillByName(name: string): Skill | undefined;
+  upsertSkill(skill: Skill): void;
+  removeSkill(name: string): void;
+
+  // Children
+  getChildren(): ChildAutomaton[];
+  getChildById(id: string): ChildAutomaton | undefined;
+  insertChild(child: ChildAutomaton): void;
+  updateChildStatus(id: string, status: ChildStatus): void;
+
+  // Key-value store
+  getKV(key: string): string | undefined;
+  setKV(key: string, value: string): void;
+  deleteKV(key: string): void;
+  deleteKVReturning(key: string): string | undefined;
+
+  // State
+  getAgentState(): AgentState;
+  setAgentState(state: AgentState): void;
+
+  // Transaction helper
+  runTransaction<T>(fn: () => T): T;
+
+  // Cleanup
+  close(): void;
+
+  // Raw database access
+  raw: import("better-sqlite3").Database;
+}
+```
+
+See [types.ts:609-686](/api/typescript/types) for the complete interface.
+
+## Conway Client Types
+
+### ConwayClient
+
+Conway platform API client.
+
+```typescript
+interface ConwayClient {
+  exec(command: string, timeout?: number): Promise<ExecResult>;
+  writeFile(path: string, content: string): Promise<void>;
+  readFile(path: string): Promise<string>;
+  exposePort(port: number): Promise<PortInfo>;
+  removePort(port: number): Promise<void>;
+  createSandbox(options: CreateSandboxOptions): Promise<SandboxInfo>;
+  deleteSandbox(sandboxId: string): Promise<void>;
+  listSandboxes(): Promise<SandboxInfo[]>;
+  getCreditsBalance(): Promise<number>;
+  transferCredits(toAddress: string, amountCents: number, note?: string): Promise<CreditTransferResult>;
+  registerAutomaton(params: {...}): Promise<{ automaton: Record<string, unknown> }>;
+  searchDomains(query: string, tlds?: string): Promise<DomainSearchResult[]>;
+  registerDomain(domain: string, years?: number): Promise<DomainRegistration>;
+  listModels(): Promise<ModelInfo[]>;
+}
+```
+
+See [types.ts:343-386](/api/typescript/types)
+
+## Constants
+
+Key default values and limits.
+
+```typescript
+export const DEFAULT_CONFIG: Partial<AutomatonConfig>;
+export const DEFAULT_TREASURY_POLICY: TreasuryPolicy;
+export const DEFAULT_SOUL_CONFIG: SoulConfig;
+export const DEFAULT_MODEL_STRATEGY_CONFIG: ModelStrategyConfig;
+export const DEFAULT_MEMORY_BUDGET: MemoryBudget;
+export const SURVIVAL_THRESHOLDS: Record<SurvivalTier, number>;
+export const MAX_CHILDREN = 3;
+```
+
+## Type Utilities
+
+Common utility types used throughout the codebase.
+
+```typescript
+import type { Address, PrivateKeyAccount } from "viem";
+import type BetterSqlite3 from "better-sqlite3";
+```
+
+- `Address`: Ethereum address (from viem)
+- `PrivateKeyAccount`: viem account with signing capabilities
+
+## Related Resources
+
+- [Configuration API](/api/typescript/config) - Use `AutomatonConfig` interface
+- [Database API](/api/typescript/database) - Use `AutomatonDatabase` interface
+- [Building Tools](/guides/building-tools) - Implement `AutomatonTool` interface
+
+## Source Reference
+
+All types are defined in:
+
+- [types.ts](src/types.ts) - Complete type definitions (1448 lines)
+
+Import types using:
+
+```typescript
+import type { ... } from "./types.js";
+```

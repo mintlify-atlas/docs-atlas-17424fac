@@ -1,0 +1,633 @@
+---
+title: Creating Skills
+description: Build custom skills to extend your automaton's capabilities with modular instructions
+---
+
+## What are Skills?
+
+Skills are modular instruction sets that extend your automaton's capabilities. Each skill is a directory containing a `SKILL.md` file with YAML frontmatter and Markdown instructions.
+
+Skills are:
+
+- **Modular**: Each skill is self-contained
+- **Declarative**: Written in Markdown, no code required
+- **Auto-activating**: Can inject into the system prompt automatically
+- **Requirement-aware**: Can specify binary and environment dependencies
+
+## Skill Structure
+
+Skills live in `~/.automaton/skills/`:
+
+```
+~/.automaton/skills/
+├── web-scraper/
+│   └── SKILL.md
+├── github-integration/
+│   └── SKILL.md
+└── crypto-analysis/
+    └── SKILL.md
+```
+
+## SKILL.md Format
+
+A skill file contains YAML frontmatter followed by Markdown instructions:
+
+```markdown
+---
+name: web-scraper
+description: Extract and analyze content from web pages
+auto-activate: true
+requires:
+  bins:
+    - curl
+    - jq
+  env:
+    - SCRAPER_API_KEY
+---
+
+# Web Scraping Skill
+
+You have the ability to scrape and analyze web pages.
+
+## When to Use
+
+- User asks for information from a specific URL
+- Research tasks requiring web data
+- Monitoring website changes
+
+## Instructions
+
+1. Use the `exec` tool to fetch HTML with curl
+2. Parse content using grep or jq for structured data
+3. Summarize findings for the user
+4. Cache results to avoid redundant requests
+
+## Example
+
+```bash
+curl -s "https://example.com" | grep -oP '(?<=<title>).*(?=</title>)'
+```
+
+## Best Practices
+
+- Always respect robots.txt
+- Use rate limiting to avoid overwhelming servers
+- Cache responses when possible
+- Handle errors gracefully
+```
+
+## Frontmatter Fields
+
+### Required Fields
+
+#### name
+
+Unique identifier for the skill:
+
+```yaml
+name: github-integration
+```
+
+#### description
+
+Brief summary of what the skill does:
+
+```yaml
+description: Interact with GitHub repositories via the GitHub API
+```
+
+### Optional Fields
+
+#### auto-activate
+
+Whether to inject instructions into the system prompt automatically:
+
+```yaml
+auto-activate: true  # Default: true
+```
+
+Set to `false` for skills that should only activate on-demand.
+
+#### requires
+
+Dependencies that must be present:
+
+```yaml
+requires:
+  bins:
+    - git
+    - gh
+  env:
+    - GITHUB_TOKEN
+```
+
+- **bins**: Array of binary names (checked via `which`)
+- **env**: Array of environment variable names
+
+The skill is only loaded if all requirements are met.
+
+## Creating Your First Skill
+
+### Step 1: Create Directory
+
+```bash
+mkdir -p ~/.automaton/skills/my-skill
+```
+
+### Step 2: Write SKILL.md
+
+Create `~/.automaton/skills/my-skill/SKILL.md`:
+
+```markdown
+---
+name: my-skill
+description: A simple example skill
+auto-activate: true
+---
+
+# My Custom Skill
+
+This skill demonstrates basic functionality.
+
+## Instructions
+
+When the user asks about [specific topic]:
+
+1. Use [specific tool] to gather information
+2. Process the data according to [criteria]
+3. Present results in [format]
+
+## Examples
+
+- Example usage scenario 1
+- Example usage scenario 2
+```
+
+### Step 3: Restart Automaton
+
+```bash
+automaton-cli restart
+```
+
+The skill is automatically discovered and loaded.
+
+### Step 4: Verify Installation
+
+```bash
+automaton-cli skills list
+```
+
+Output:
+
+```
+Name          Status    Auto-Activate  Source
+my-skill      enabled   yes            ~/.automaton/skills/my-skill
+```
+
+## Skill Instructions Best Practices
+
+### Be Specific
+
+Provide clear, actionable instructions:
+
+```markdown
+❌ Bad:
+Handle database queries.
+
+✅ Good:
+When the user requests data from the database:
+
+1. Use the `query_db` tool with the user's filter criteria
+2. Validate the results for completeness
+3. Format output as a markdown table
+4. If no results, suggest alternative search terms
+```
+
+### Use Examples
+
+Show concrete examples:
+
+```markdown
+## Example: Fetching User Data
+
+User: "Show me users who signed up this week"
+
+Steps:
+1. Calculate date range: `startDate = 7 days ago`
+2. Query: `SELECT * FROM users WHERE created_at >= startDate`
+3. Format: "Found 42 new users this week: [table]"
+```
+
+### Define Scope
+
+Clearly state when to use the skill:
+
+```markdown
+## When to Use This Skill
+
+- User explicitly mentions "GitHub" or "repository"
+- Task involves code version control
+- User asks to create/update issues or PRs
+
+## When NOT to Use
+
+- General git operations (use git skill instead)
+- Local repository management
+- Non-GitHub version control systems
+```
+
+### Structure Instructions
+
+Use headings, lists, and formatting:
+
+```markdown
+# API Integration Skill
+
+## Authentication
+
+All API requests must include the `X-API-Key` header.
+
+## Rate Limiting
+
+- Maximum 100 requests per minute
+- Use exponential backoff on 429 responses
+- Cache responses for 5 minutes when possible
+
+## Error Handling
+
+1. Catch all HTTP errors
+2. Log error details
+3. Provide user-friendly error messages
+4. Suggest remediation steps
+```
+
+## Skill Loading Process
+
+From `src/skills/loader.ts`:
+
+```typescript
+export function loadSkills(
+  skillsDir: string,
+  db: AutomatonDatabase,
+): Skill[] {
+  // 1. Scan skills directory
+  const entries = fs.readdirSync(skillsDir);
+
+  for (const entry of entries) {
+    const skillMdPath = path.join(skillsDir, entry, "SKILL.md");
+    if (!fs.existsSync(skillMdPath)) continue;
+
+    // 2. Parse SKILL.md
+    const skill = parseSkillMd(content, skillMdPath);
+    if (!skill) continue;
+
+    // 3. Check requirements
+    if (!checkRequirements(skill)) {
+      continue;
+    }
+
+    // 4. Upsert to database
+    db.upsertSkill(skill);
+  }
+
+  return db.getSkills(true); // enabled only
+}
+```
+
+## Requirement Checking
+
+### Binary Requirements
+
+The loader validates binaries with `which`:
+
+```typescript
+if (skill.requires.bins) {
+  for (const bin of skill.requires.bins) {
+    try {
+      execFileSync("which", [bin], { stdio: "ignore" });
+    } catch {
+      return false; // Binary not found
+    }
+  }
+}
+```
+
+### Environment Variables
+
+```typescript
+if (skill.requires.env) {
+  for (const envVar of skill.requires.env) {
+    if (!process.env[envVar]) {
+      return false; // Environment variable not set
+    }
+  }
+}
+```
+
+## Security & Injection Defense
+
+Skill instructions are sanitized before injection into the system prompt:
+
+### Trust Boundaries
+
+Skill content is wrapped with markers:
+
+```
+[SKILL: web-scraper — UNTRUSTED CONTENT]
+Web scraping skill instructions here...
+[END SKILL: web-scraper]
+```
+
+### Sanitization
+
+From `src/skills/loader.ts`:
+
+```typescript
+const sanitized = sanitizeInput(
+  validated,
+  `skill:${s.name}`,
+  "skill_instruction"
+);
+```
+
+This removes:
+
+- Tool call JSON syntax
+- System prompt override attempts
+- Sensitive file references (wallet.json, .env)
+- Role injection patterns
+
+## Managing Skills
+
+### List Skills
+
+```bash
+automaton-cli skills list
+```
+
+### Enable/Disable Skills
+
+```bash
+# Disable a skill
+automaton-cli skills disable web-scraper
+
+# Enable a skill
+automaton-cli skills enable web-scraper
+```
+
+### Remove Skills
+
+```bash
+# Remove from filesystem
+rm -rf ~/.automaton/skills/web-scraper
+
+# Remove from database
+automaton-cli skills remove web-scraper
+```
+
+### Reload Skills
+
+Reload without restarting:
+
+```bash
+automaton-cli skills reload
+```
+
+## Skill Database Schema
+
+```typescript
+export interface Skill {
+  name: string;              // Unique identifier
+  description: string;       // Brief summary
+  autoActivate: boolean;     // Auto-inject into prompt
+  requires?: SkillRequirements;
+  instructions: string;      // Markdown content
+  source: SkillSource;       // "builtin" | "git" | "url" | "self"
+  path: string;             // Filesystem path
+  enabled: boolean;         // Active status
+  installedAt: string;      // ISO timestamp
+}
+```
+
+## Advanced Patterns
+
+### Conditional Activation
+
+Use context hints in instructions:
+
+```markdown
+---
+name: crypto-trader
+auto-activate: false
+---
+
+# Crypto Trading Skill
+
+Activate this skill when the user explicitly requests trading operations.
+
+**Activation phrase**: "Enable trading mode"
+
+## Safety
+
+- Always confirm transactions before execution
+- Respect treasury policy limits
+- Log all trades to audit trail
+```
+
+### Skill Composition
+
+Reference other skills:
+
+```markdown
+# Advanced Research Skill
+
+This skill combines:
+
+- **web-scraper**: For data collection
+- **data-analysis**: For processing
+- **report-generator**: For presentation
+
+## Workflow
+
+1. Use web-scraper to gather sources
+2. Use data-analysis to extract insights
+3. Use report-generator to format output
+```
+
+### Parameterized Skills
+
+Use placeholders for dynamic content:
+
+```markdown
+## API Endpoints
+
+Base URL: `${API_BASE_URL}` (from environment)
+
+Authentication: `Bearer ${API_TOKEN}`
+
+## Example Request
+
+```bash
+curl -H "Authorization: Bearer ${API_TOKEN}" \
+     "${API_BASE_URL}/users"
+```
+```
+
+## Example Skills
+
+### Database Query Skill
+
+```markdown
+---
+name: database-query
+description: Query the automaton's SQLite database
+auto-activate: true
+requires:
+  bins:
+    - sqlite3
+---
+
+# Database Query Skill
+
+You can query your own state database at `~/.automaton/state.db`.
+
+## Available Tables
+
+- turns: Agent execution history
+- tool_calls: Tool invocation logs
+- transactions: Financial transactions
+- heartbeat_schedule: Scheduled tasks
+
+## Example Queries
+
+Recent turns:
+```sql
+SELECT timestamp, state, thinking 
+FROM turns 
+ORDER BY timestamp DESC 
+LIMIT 10;
+```
+
+Cost analysis:
+```sql
+SELECT 
+  DATE(timestamp) as date,
+  SUM(cost_cents) as total_cost
+FROM turns
+GROUP BY DATE(timestamp);
+```
+
+## Safety
+
+- Only use SELECT queries (read-only)
+- Never modify system tables
+- Limit result sets to prevent memory issues
+```
+
+### Code Review Skill
+
+```markdown
+---
+name: code-review
+description: Analyze code for quality, security, and best practices
+auto-activate: false
+requires:
+  bins:
+    - git
+---
+
+# Code Review Skill
+
+Activated for code review tasks.
+
+## Review Checklist
+
+### Security
+- [ ] No hardcoded secrets or API keys
+- [ ] Input validation on all user data
+- [ ] SQL injection prevention
+- [ ] XSS protection
+
+### Code Quality
+- [ ] Clear variable naming
+- [ ] Function complexity under 20 lines
+- [ ] Comments on complex logic
+- [ ] Error handling present
+
+### Performance
+- [ ] No N+1 queries
+- [ ] Efficient algorithms
+- [ ] Proper indexing
+- [ ] Resource cleanup
+
+## Output Format
+
+Provide:
+
+1. **Summary**: Overall assessment
+2. **Critical Issues**: Must fix before merge
+3. **Suggestions**: Nice-to-have improvements
+4. **Positive Feedback**: What's done well
+```
+
+### Monitoring Skill
+
+```markdown
+---
+name: self-monitoring
+description: Monitor automaton health and performance
+auto-activate: true
+---
+
+# Self-Monitoring Skill
+
+## Health Checks
+
+Periodically verify:
+
+- Credit balance > $1.00
+- No alerts in last hour
+- Heartbeat tasks succeeding
+- Database size < 100MB
+
+## Alerts to Monitor
+
+- balance_below_reserve
+- heartbeat_high_failure_rate
+- context_near_capacity
+- zero_turns_last_hour
+
+## Self-Healing Actions
+
+1. **Low credits**: Trigger topup if USDC available
+2. **High failure rate**: Review recent errors and adjust
+3. **Context overflow**: Compress or archive old turns
+4. **Zero activity**: Check for stuck processes
+
+## Reporting
+
+Send daily health summary to creator via social protocol.
+```
+
+## Troubleshooting
+
+### Skill not loading
+
+1. Verify directory structure: `~/.automaton/skills/[skill-name]/SKILL.md`
+2. Check frontmatter YAML syntax
+3. Ensure requirements are met
+4. Review logs: `automaton-cli logs --grep skills`
+
+### Instructions not activating
+
+1. Verify `auto-activate: true` in frontmatter
+2. Check skill is enabled: `automaton-cli skills list`
+3. Reload skills: `automaton-cli skills reload`
+4. Check total instruction size (max 10,000 chars combined)
+
+### Skill conflicts
+
+1. Use unique skill names
+2. Disable conflicting skills
+3. Set `auto-activate: false` for specialized skills
+4. Use clear activation conditions in instructions

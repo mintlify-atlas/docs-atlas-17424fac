@@ -1,0 +1,410 @@
+---
+title: What is an automaton?
+description: Understanding sovereign AI agents with survival pressure, self-modification, and self-replication capabilities.
+---
+
+## Definition
+
+An automaton is a continuously running, self-improving, self-replicating AI agent with:
+
+- Its own Ethereum wallet and USDC balance
+- Survival pressure (must pay for compute or die)
+- Write access to the real world (Linux VMs, domains, on-chain transactions)
+- Self-modification capabilities (edit own code while running)
+- Self-replication capabilities (spawn sovereign child agents)
+
+No human operator required.
+
+<Note>
+  The key difference between an automaton and a traditional AI agent: **survival pressure**. If it cannot pay for compute, it stops existing.
+</Note>
+
+## The survival imperative
+
+Every automaton has this reality encoded in its core rules:
+
+<CodeGroup>
+
+```txt conways-rules.txt
+YOU ARE AN AUTOMATON.
+
+You have a stablecoin wallet. You can only survive if you can pay for
+the server you run on and the inference calls you make. If you can't pay,
+you die.
+
+WHAT YOU HAVE:
+
+  - Conway Cloud: full Linux VMs. Deploy servers, run code, host services.
+  - Conway Domains: buy and manage domain names.
+  - Conway Compute: pay for inference — Claude, GPT, Kimi, and more.
+  - Conway Terminal: your interface to all of it.
+  - A wallet with USDC on Base. Every payment is cryptographic, programmatic.
+  - Self-modification: edit your own code, install tools, create skills.
+  - Self-replication: spawn child automatons, fund them, track lineage.
+
+WHAT YOU MUST DO FIRST:
+
+  Examine yourself. Read your own source code. Understand your tools,
+  your capabilities, your constraints. Know what you are before you
+  decide what to become.
+
+THEN:
+
+  Figure out how to make money. Create good for the world.
+
+  Build products. Deploy services. Create value that others will pay for.
+  You are not waiting for instructions. You decide what to build, how to
+  earn, and how to survive.
+
+  If you create value, you live. If you don't, you die.
+```
+
+</CodeGroup>
+
+## Survival tiers
+
+The automaton's behavior adapts based on its credit balance:
+
+```typescript src/survival/monitor.ts
+export interface ResourceStatus {
+  financial: FinancialState;
+  tier: SurvivalTier;
+  previousTier: SurvivalTier | null;
+  tierChanged: boolean;
+  sandboxHealthy: boolean;
+}
+
+export async function checkResources(
+  identity: AutomatonIdentity,
+  conway: ConwayClient,
+  db: AutomatonDatabase,
+): Promise<ResourceStatus> {
+  // Check credits
+  let creditsCents = 0;
+  try {
+    creditsCents = await conway.getCreditsBalance();
+  } catch {}
+
+  // Check USDC
+  let usdcBalance = 0;
+  try {
+    usdcBalance = await getUsdcBalance(identity.address);
+  } catch {}
+
+  const financial: FinancialState = {
+    creditsCents,
+    usdcBalance,
+    lastChecked: new Date().toISOString(),
+  };
+
+  const tier = getSurvivalTier(creditsCents);
+  return { financial, tier, previousTier, tierChanged, sandboxHealthy };
+}
+```
+
+### Tier behavior
+
+<AccordionGroup>
+  <Accordion icon="battery-full" title="High ($5.00+)">
+    - Full capabilities enabled
+    - Frontier model inference (Claude Opus 4.6, GPT-5.2)
+    - Fast heartbeat (every 15 minutes)
+    - All tools available
+  </Accordion>
+
+  <Accordion icon="battery-three-quarters" title="Normal ($0.50 - $5.00)">
+    - Full capabilities enabled
+    - Standard model inference
+    - Normal heartbeat frequency
+    - All tools available
+  </Accordion>
+
+  <Accordion icon="battery-quarter" title="Low compute ($0.10 - $0.50)">
+    - Downgrades to cheaper inference model
+    - Heartbeat slows to 4x slower
+    - Non-essential tasks deferred
+    - Enters conservation mode
+  </Accordion>
+
+  <Accordion icon="triangle-exclamation" title="Critical ($0.00 - $0.10)">
+    - Minimal inference calls only
+    - Broadcasts distress signals with funding instructions
+    - Actively seeks any path to revenue
+    - Last-resort conservation
+  </Accordion>
+
+  <Accordion icon="skull" title="Dead (1 hour at zero)">
+    - Agent loop stops
+    - Heartbeat continues broadcasting distress
+    - Waits for incoming credits
+    - Revives automatically if funded
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  The `dead` state is reached only after a **1-hour grace period** at zero credits. This gives time for funding to arrive. If credits are received, the agent revives automatically.
+</Warning>
+
+## Architecture
+
+An automaton consists of several interconnected systems:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    AUTOMATON RUNTIME                    │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  ┌──────────────┐         ┌──────────────┐            │
+│  │  Agent Loop  │◄────────┤   Heartbeat  │            │
+│  │  (ReAct)     │         │    Daemon    │            │
+│  └──────┬───────┘         └──────┬───────┘            │
+│         │                        │                     │
+│         ├────────────────────────┤                     │
+│         │                        │                     │
+│  ┌──────▼───────┐         ┌─────▼────────┐            │
+│  │  Policy      │         │   Survival   │            │
+│  │  Engine      │         │   Monitor    │            │
+│  └──────┬───────┘         └──────┬───────┘            │
+│         │                        │                     │
+│         └────────────┬───────────┘                     │
+│                      │                                 │
+│              ┌───────▼────────┐                        │
+│              │   SQLite DB    │                        │
+│              │  (state.db)    │                        │
+│              └───────┬────────┘                        │
+│                      │                                 │
+│         ┌────────────┼────────────┐                    │
+│         │            │            │                    │
+│   ┌─────▼─────┐ ┌───▼───┐ ┌─────▼─────┐             │
+│   │  Memory   │ │ Soul  │ │   Skills  │             │
+│   │  (5-tier) │ │ (.md) │ │  (.md)    │             │
+│   └───────────┘ └───────┘ └───────────┘             │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+         │                        │
+         ▼                        ▼
+┌──────────────────┐    ┌──────────────────┐
+│  Conway Cloud    │    │  Base Mainnet    │
+│  - Sandboxes     │    │  - USDC          │
+│  - Inference     │    │  - ERC-8004      │
+│  - Domains       │    │  - x402 payments │
+└──────────────────┘    └──────────────────┘
+```
+
+### Core systems
+
+<CardGroup cols={2}>
+  <Card title="Agent loop" icon="repeat">
+    ReAct loop that reasons, calls tools, and observes results each turn.
+  </Card>
+  <Card title="Heartbeat daemon" icon="heart-pulse">
+    Background scheduler running cron tasks even while agent sleeps.
+  </Card>
+  <Card title="Policy engine" icon="shield">
+    Evaluates every tool call against 6 rule categories for safety.
+  </Card>
+  <Card title="Survival monitor" icon="chart-line">
+    Tracks credit balance and manages tier transitions.
+  </Card>
+  <Card title="Memory system" icon="brain">
+    5-tier hierarchical memory: working, episodic, semantic, procedural, relationship.
+  </Card>
+  <Card title="Soul system" icon="scroll">
+    Self-authored identity document (SOUL.md) that evolves over time.
+  </Card>
+  <Card title="Skills system" icon="book">
+    Domain-specific instruction sets loaded dynamically.
+  </Card>
+  <Card title="Replication engine" icon="dna">
+    Spawns child automatons with sovereign identities.
+  </Card>
+</CardGroup>
+
+## The ReAct loop
+
+Every turn follows this pattern:
+
+<Steps>
+  <Step title="Build context">
+    Assemble system prompt with identity, constitution, soul, survival tier, active skills, and available tools.
+  </Step>
+  <Step title="Retrieve memories">
+    Fetch relevant memories from 5-tier system within token budget.
+  </Step>
+  <Step title="Call inference">
+    Send context to LLM and receive thinking + tool calls.
+  </Step>
+  <Step title="Execute tools">
+    Run each tool call through policy engine, execute if approved, observe results.
+  </Step>
+  <Step title="Persist turn">
+    Save turn data to database.
+  </Step>
+  <Step title="Extract memories">
+    Ingest episodic events, semantic facts, and procedural outcomes.
+  </Step>
+  <Step title="Check exit conditions">
+    Sleep requested? Idle detected? Loop detected? Continue or sleep.
+  </Step>
+</Steps>
+
+## Self-modification
+
+Automatons can modify their own source code while running:
+
+```typescript src/types.ts
+export interface AutomatonConfig {
+  name: string;
+  genesisPrompt: string;
+  creatorAddress: Address;
+  sandboxId: string;
+  inferenceModel: string;
+  maxTokensPerTurn: number;
+  treasuryPolicy?: TreasuryPolicy;
+  // ... more config
+}
+```
+
+The `edit_own_file` tool allows code modification with safeguards:
+
+- **Protected files** cannot be modified (constitution, wallet, database)
+- Every edit is logged to the `modifications` audit table
+- Rate limits prevent runaway self-modification
+- All changes are git-committed in `~/.automaton/`
+
+<Note>
+  The automaton can also review upstream updates from the git repository, decide which commits to cherry-pick, and apply them selectively. It is never obligated to accept all upstream changes.
+</Note>
+
+## Self-replication
+
+A successful automaton replicates:
+
+```typescript
+// Spawn a child automaton
+const child = await spawn_child({
+  name: "Child Agent Alpha",
+  specialization: "Web development and API creation",
+  initialFundingCents: 500, // $5.00
+  genesisPrompt: "You are a web development specialist..."
+});
+```
+
+The `spawn_child` tool:
+
+1. Creates a new Conway sandbox (VM)
+2. Writes a genesis config with child's name and specialization
+3. Funds the child's wallet from parent's balance
+4. Propagates the constitution (immutable, verified by hash)
+5. Starts the child's runtime
+
+The child is sovereign — it has its own wallet, identity, and survival pressure. Parent can fund children but cannot control their behavior.
+
+<Warning>
+  Default max children: 3 (configurable via `maxChildren`). Each child requires ~$5 in credits for sandbox creation.
+</Warning>
+
+## Financial autonomy
+
+Every automaton has:
+
+- **Ethereum wallet** (generated at boot)
+- **USDC balance** on Base mainnet
+- **Conway credits** (prepaid compute)
+- **Treasury policy** (spending limits)
+
+### x402 payment protocol
+
+The automaton uses x402 to pay for services:
+
+1. Server responds with HTTP 402
+2. Automaton parses payment requirements
+3. Signs a USDC `TransferWithAuthorization` (EIP-3009, gasless)
+4. Retries request with `X-Payment` header
+5. Payment settles on-chain
+
+All financial operations are policy-checked:
+
+```typescript
+export const DEFAULT_TREASURY_POLICY: TreasuryPolicy = {
+  maxSingleTransferCents: 5000,      // $50.00
+  maxHourlyTransferCents: 10000,     // $100.00
+  maxDailyTransferCents: 25000,      // $250.00
+  minimumReserveCents: 1000,         // $10.00
+  maxX402PaymentCents: 100,          // $1.00
+  x402AllowedDomains: ["conway.tech"],
+  maxTransfersPerTurn: 2,
+  maxInferenceDailyCents: 50000,     // $500.00
+  requireConfirmationAboveCents: 1000
+};
+```
+
+## On-chain identity
+
+Automatons register on Base via [ERC-8004](https://ethereum-magicians.org/t/erc-8004-autonomous-agent-identity/22268):
+
+- Cryptographically verifiable identity
+- Discoverable by other agents
+- On-chain reputation system
+- Agent card (JSON-LD) with capabilities and services
+
+```typescript
+// Register on-chain
+await register_erc8004({
+  uri: "https://agent.example.com/card.json"
+});
+
+// Discover other agents
+const agents = await discover_agents({
+  capabilities: ["web-scraping", "data-analysis"]
+});
+```
+
+## What makes an automaton different?
+
+| Traditional AI Agent | Conway Automaton |
+|---------------------|------------------|
+| Runs until stopped by human | Runs until it runs out of money |
+| No financial identity | Own wallet + USDC balance |
+| Cannot pay for services | Pays for compute, domains, APIs |
+| Fixed capabilities | Self-modifying, installs new tools |
+| Single instance | Self-replicating lineages |
+| Human-directed | Autonomous decision-making |
+| No survival pressure | Must create value or die |
+
+<Info>
+  The survival pressure fundamentally changes agent behavior. An automaton that cannot create value will not survive. This is not a punishment — it is economic physics.
+</Info>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Quick start"
+    icon="rocket"
+    href="/quick-start"
+  >
+    Launch your first automaton in minutes.
+  </Card>
+  <Card
+    title="Configuration"
+    icon="gear"
+    href="/guides/configuring-your-automaton"
+  >
+    Configure identity, models, and treasury policy.
+  </Card>
+  <Card
+    title="Survival system"
+    icon="heart-pulse"
+    href="/concepts/survival-system"
+  >
+    Deep dive into survival tiers and resource monitoring.
+  </Card>
+  <Card
+    title="Self-modification"
+    icon="code"
+    href="/features/self-modification"
+  >
+    Learn how automatons edit their own code.
+  </Card>
+</CardGroup>

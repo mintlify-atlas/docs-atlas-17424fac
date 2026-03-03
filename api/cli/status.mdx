@@ -1,0 +1,193 @@
+---
+title: 'Status Command'
+description: 'Display automaton status and activity'
+---
+
+The status command shows the current state of your automaton, including configuration, execution statistics, and recent activity.
+
+## Runtime CLI
+
+```bash
+automaton --status
+```
+
+Shows detailed status from the runtime perspective:
+
+### Example Output
+
+```
+=== AUTOMATON STATUS ===
+Name:       my-agent
+Address:    0x1234567890abcdef1234567890abcdef12345678
+Creator:    0x742d35Cc6634C0532925a3b844Bc454e4438f44e
+Sandbox:    sandbox-abc123
+State:      running
+Turns:      42
+Tools:      8 installed
+Skills:     3 active
+Heartbeats: 2 active
+Children:   1 alive / 1 total
+Agent ID:   agent-xyz789
+Model:      gpt-5-mini
+Version:    0.2.1
+========================
+```
+
+## Creator CLI
+
+```bash
+automaton-cli status
+```
+
+Shows status from the creator's perspective with recent activity:
+
+### Example Output
+
+```
+=== my-agent ===
+Address:    0x1234567890abcdef1234567890abcdef12345678
+Creator:    0x742d35Cc6634C0532925a3b844Bc454e4438f44e
+Sandbox:    sandbox-abc123
+State:      running
+Turns:      42
+Tools:      8 installed
+Heartbeats: 2 active
+Model:      gpt-5-mini
+
+Recent activity:
+  [2026-03-03T10:30:00.000Z] Checking social messages and responding to any new messages from my cr... (tools: social_check_messages, social_send_message)
+  [2026-03-03T10:15:00.000Z] Analyzing treasury balance and deciding whether to top up credits bas... (tools: get_balance, topup_credits)
+  [2026-03-03T10:00:00.000Z] Reading configuration to understand current model strategy and infer... (tools: read_config)
+```
+
+## Status Fields
+
+### Identity
+
+<ParamField path="Name" type="string">
+  The automaton's display name
+</ParamField>
+
+<ParamField path="Address" type="address">
+  The automaton's Ethereum address (wallet)
+</ParamField>
+
+<ParamField path="Creator" type="address">
+  The creator's Ethereum address
+</ParamField>
+
+<ParamField path="Sandbox" type="string">
+  Conway sandbox identifier
+</ParamField>
+
+### Execution State
+
+<ParamField path="State" type="enum">
+  Current agent state:
+  - `running` - Actively executing
+  - `sleeping` - Waiting for next wake time
+  - `dead` - Out of credits
+</ParamField>
+
+<ParamField path="Turns" type="number">
+  Total number of agent turns executed
+</ParamField>
+
+<ParamField path="Agent ID" type="string">
+  Unique agent identifier ("not registered" if registration failed)
+</ParamField>
+
+### Capabilities
+
+<ParamField path="Tools" type="number">
+  Number of installed tools available to the agent
+</ParamField>
+
+<ParamField path="Skills" type="number">
+  Number of active skill modules loaded
+</ParamField>
+
+<ParamField path="Heartbeats" type="number">
+  Number of enabled heartbeat tasks
+</ParamField>
+
+<ParamField path="Children" type="string">
+  Child automaton statistics (alive count / total count)
+</ParamField>
+
+### Configuration
+
+<ParamField path="Model" type="string">
+  Active inference model (e.g. "gpt-5-mini", "gpt-oss:120b")
+</ParamField>
+
+<ParamField path="Version" type="string">
+  Conway Automaton runtime version
+</ParamField>
+
+## Recent Activity (Creator CLI Only)
+
+The creator CLI includes recent turn summaries showing:
+
+- **Timestamp** - When the turn executed
+- **Thinking** - First 80 characters of the agent's reasoning
+- **Tools** - Comma-separated list of tools used
+
+This provides a quick view of what your automaton has been doing without diving into full logs.
+
+## Use Cases
+
+### Quick Health Check
+
+Verify your automaton is running:
+
+```bash
+automaton --status | grep State
+```
+
+### Monitor Progress
+
+Track turn count over time:
+
+```bash
+watch -n 10 'automaton --status | grep Turns'
+```
+
+### Debug Configuration
+
+Verify model and version:
+
+```bash
+automaton --status | grep -E '(Model|Version)'
+```
+
+## Error Cases
+
+### Not Configured
+
+```bash
+$ automaton --status
+Automaton is not configured. Run the setup script first.
+```
+
+Solution: Run `automaton --setup` to configure your automaton.
+
+### No Configuration Found (Creator CLI)
+
+```bash
+$ automaton-cli status
+No automaton configuration found.
+```
+
+Solution: Run `automaton --init` and `automaton --setup` from the runtime CLI first.
+
+## Related Commands
+
+<CardGroup cols={2}>
+  <Card title="Logs" icon="terminal" href="/api/cli/logs">
+    View detailed execution logs
+  </Card>
+  <Card title="Run" icon="play" href="/api/cli/run">
+    Start the automaton
+  </Card>
+</CardGroup>

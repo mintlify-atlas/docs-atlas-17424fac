@@ -1,0 +1,213 @@
+---
+title: 'Fund Command'
+description: 'Transfer Conway credits to automatons'
+---
+
+The fund command transfers Conway credits using your automaton's API key. This is useful for funding other automatons or topping up your own credits.
+
+## Usage
+
+```bash
+automaton-cli fund <amount> [--to <address>]
+```
+
+## Arguments
+
+<ParamField path="amount" type="string" required>
+  Amount to transfer. Can be specified as:
+  - Dollars (e.g. `5.00`, `10.50`)
+  - Cents for values >= 100 (e.g. `500` = $5.00)
+</ParamField>
+
+## Options
+
+<ParamField path="--to" type="address">
+  Destination address. If omitted, transfers to the automaton's own address (self-funding).
+</ParamField>
+
+## Examples
+
+### Self-Fund (Top Up Own Credits)
+
+```bash
+automaton-cli fund 5.00
+```
+
+Transfers $5.00 to your automaton's own address.
+
+### Fund Another Automaton
+
+```bash
+automaton-cli fund 10.00 --to 0x742d35Cc6634C0532925a3b844Bc454e4438f44e
+```
+
+Transfers $10.00 to the specified address.
+
+### Fund Using Cents
+
+```bash
+automaton-cli fund 500 --to 0xabc...def
+```
+
+Transfers 500 cents ($5.00) to the target address.
+
+## Output
+
+### Successful Transfer
+
+```
+Transfer submitted.
+From key:  ca75...e3f2
+To:        0x742d35Cc6634C0532925a3b844Bc454e4438f44e
+Amount:    $10.00 (1000 cents)
+Status:    submitted
+Transfer:  txn_abc123xyz
+Balance:   $45.50 after transfer
+```
+
+### Transfer Failed
+
+```
+Credit transfer failed (/v1/credits/transfer): 402: Insufficient balance
+```
+
+## How It Works
+
+1. **Loads Configuration** - Reads Conway API key from `~/.automaton/config.json`
+2. **Parses Amount** - Converts amount to cents (integers >= 100 are treated as cents, otherwise as dollars)
+3. **Determines Destination** - Uses `--to` address or falls back to automaton's own address
+4. **Calls Conway API** - POSTs to `/v1/credits/transfer` or `/v1/credits/transfers` endpoint
+5. **Reports Result** - Shows transfer ID, status, and remaining balance
+
+## Amount Parsing
+
+The amount parser follows these rules:
+
+- **Integers >= 100**: Treated as cents
+  - `500` → 500 cents ($5.00)
+  - `1000` → 1000 cents ($10.00)
+
+- **Decimals or integers < 100**: Treated as dollars
+  - `5.00` → 500 cents ($5.00)
+  - `10.50` → 1050 cents ($10.50)
+  - `5` → 500 cents ($5.00)
+
+## Response Fields
+
+<ParamField path="From key" type="string">
+  Masked API key (first 4 and last 4 characters visible)
+</ParamField>
+
+<ParamField path="To" type="address">
+  Destination Ethereum address
+</ParamField>
+
+<ParamField path="Amount" type="string">
+  Transfer amount in dollars and cents
+</ParamField>
+
+<ParamField path="Status" type="string">
+  Transfer status (typically "submitted")
+</ParamField>
+
+<ParamField path="Transfer" type="string">
+  Unique transfer ID for tracking
+</ParamField>
+
+<ParamField path="Balance" type="string">
+  Remaining balance after transfer (if provided by API)
+</ParamField>
+
+## Error Cases
+
+### Missing Amount
+
+```bash
+$ automaton-cli fund
+
+Usage: automaton-cli fund <amount> [--to 0x...]
+Examples:
+  automaton-cli fund 5.00
+  automaton-cli fund 500 --to 0xabc...
+```
+
+### No Configuration
+
+```bash
+$ automaton-cli fund 5.00
+No automaton configuration found.
+```
+
+Solution: Run `automaton --setup` first.
+
+### No API Key
+
+```bash
+$ automaton-cli fund 5.00
+No Conway API key found in automaton config.
+```
+
+Solution: Run `automaton --provision` to get an API key.
+
+### Invalid Amount
+
+```bash
+$ automaton-cli fund invalid
+Invalid amount: invalid
+```
+
+Solution: Provide a valid number (e.g. `5.00` or `500`).
+
+### Insufficient Balance
+
+```
+Credit transfer failed: 402: Insufficient balance
+```
+
+Solution: Top up your Conway credits first.
+
+## API Endpoints
+
+The command tries two endpoints in order:
+
+1. `/v1/credits/transfer` (primary)
+2. `/v1/credits/transfers` (fallback)
+
+If the first returns 404, it tries the second. This ensures compatibility with different API versions.
+
+## Use Cases
+
+### Emergency Credit Top-Up
+
+If your automaton is in "dead" state, fund it to resume:
+
+```bash
+automaton-cli fund 10.00
+```
+
+### Fund a Child Automaton
+
+```bash
+automaton-cli fund 5.00 --to 0x<child-address>
+```
+
+### Batch Funding Script
+
+```bash
+#!/bin/bash
+for agent in 0xaaa... 0xbbb... 0xccc...; do
+  automaton-cli fund 5.00 --to $agent
+  sleep 1
+done
+```
+
+## Related Commands
+
+<CardGroup cols={2}>
+  <Card title="Status" icon="chart-line" href="/api/cli/status">
+    Check automaton balance and state
+  </Card>
+  <Card title="Run" icon="play" href="/api/cli/run">
+    Start the automaton after funding
+  </Card>
+</CardGroup>

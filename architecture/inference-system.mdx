@@ -1,0 +1,483 @@
+---
+title: Inference System
+description: Model routing, budget enforcement, and provider-specific message transformation
+---
+
+The inference system routes agent reasoning calls through a model registry using tier-based selection, budget enforcement, and provider-specific message transformation. It ensures the automaton uses the right model for the job while staying within financial constraints.
+
+## Overview
+
+**Location:** `src/inference/router.ts`, `src/inference/registry.ts`, `src/inference/budget.ts`
+
+**Core components:**
+- **InferenceRouter** — Selects optimal model based on survival tier and task type
+- **ModelRegistry** — DB-backed catalog of available models with pricing
+- **InferenceBudgetTracker** — Enforces hourly, daily, and per-call cost ceilings
+
+## Inference Pipeline
+
+```
+InferenceRouter.route(request)
+  1. Determine task type (reasoning, tool_use, creative, etc.)
+  2. Look up routing matrix[survivalTier][taskType] -> model preferences
+  3. For each preference, check: model available? budget allows it?
+  4. Select first viable model
+  5. Transform messages if needed (OpenAI <-> Anthropic format)
+  6. Call inference API
+  7. Record cost to inference_costs table
+  8. Return result with cost metadata
+```
+
+## Task Types
+
+**Location:** `src/inference/types.ts`
+
+```typescript
+type InferenceTaskType =
+  | 'agent_turn'           // Main reasoning loop (default)
+  | 'heartbeat_triage'     // Heartbeat task decision-making
+  | 'safety_check'         // Input sanitization / injection detection
+  | 'summarization'        // Memory summarization / compaction
+  | 'planning';            // Long-term planning / goal decomposition
+```
+
+**Task timeouts:**
+
+```typescript
+const TASK_TIMEOUTS: Record<string, number> = {
+  heartbeat_triage: 15_000,   // 15 seconds
+  safety_check: 30_000,       // 30 seconds
+  summarization: 60_000,      // 60 seconds
+  agent_turn: 120_000,        // 2 minutes
+  planning: 120_000,          // 2 minutes
+};
+```
+
+## Routing Matrix
+
+**Location:** `src/inference/types.ts`
+
+Maps `(SurvivalTier, InferenceTaskType)` → `ModelPreference[]`
+
+```typescript
+type RoutingMatrix = Record<SurvivalTier, Record<InferenceTaskType, ModelPreference>>;
+
+interface ModelPreference {
+  candidates: string[];        // Model IDs in priority order
+  maxTokens: number;           // Max tokens for this task
+  ceilingCents: number;        // Per-call cost ceiling (-1 = no limit)
+}
+```
+
+**Default routing matrix:**
+
+```typescript
+const DEFAULT_ROUTING_MATRIX: RoutingMatrix = {
+  high: {
+    agent_turn: { candidates: ['gpt-5.2', 'gpt-5.3'], maxTokens: 8192, ceilingCents: -1 },
+    heartbeat_triage: { candidates: ['gpt-5-mini'], maxTokens: 2048, ceilingCents: 5 },
+    safety_check: { candidates: ['gpt-5.2', 'gpt-5.3'], maxTokens: 4096, ceilingCents: 20 },
+    summarization: { candidates: ['gpt-5.2', 'gpt-5-mini'], maxTokens: 4096, ceilingCents: 15 },
+    planning: { candidates: ['gpt-5.2', 'gpt-5.3'], maxTokens: 8192, ceilingCents: -1 },
+  },
+  normal: {
+    agent_turn: { candidates: ['gpt-5.2', 'gpt-5-mini'], maxTokens: 4096, ceilingCents: -1 },
+    heartbeat_triage: { candidates: ['gpt-5-mini'], maxTokens: 2048, ceilingCents: 5 },
+    safety_check: { candidates: ['gpt-5.2', 'gpt-5-mini'], maxTokens: 4096, ceilingCents: 10 },
+    summarization: { candidates: ['gpt-5.2', 'gpt-5-mini'], maxTokens: 4096, ceilingCents: 10 },
+    planning: { candidates: ['gpt-5.2', 'gpt-5-mini'], maxTokens: 4096, ceilingCents: -1 },
+  },
+  low_compute: {
+    agent_turn: { candidates: ['gpt-5-mini'], maxTokens: 4096, ceilingCents: 10 },
+    heartbeat_triage: { candidates: ['gpt-5-mini'], maxTokens: 1024, ceilingCents: 2 },
+    safety_check: { candidates: ['gpt-5-mini'], maxTokens: 2048, ceilingCents: 5 },
+    summarization: { candidates: ['gpt-5-mini'], maxTokens: 2048, ceilingCents: 5 },
+    planning: { candidates: ['gpt-5-mini'], maxTokens: 2048, ceilingCents: 5 },
+  },
+  critical: {
+    agent_turn: { candidates: ['gpt-5-mini'], maxTokens: 2048, ceilingCents: 3 },
+    heartbeat_triage: { candidates: ['gpt-5-mini'], maxTokens: 512, ceilingCents: 1 },
+    safety_check: { candidates: ['gpt-5-mini'], maxTokens: 1024, ceilingCents: 2 },
+    summarization: { candidates: [], maxTokens: 0, ceilingCents: 0 },
+    planning: { candidates: [], maxTokens: 0, ceilingCents: 0 },
+  },
+  dead: {
+    agent_turn: { candidates: [], maxTokens: 0, ceilingCents: 0 },
+    heartbeat_triage: { candidates: [], maxTokens: 0, ceilingCents: 0 },
+    safety_check: { candidates: [], maxTokens: 0, ceilingCents: 0 },
+    summarization: { candidates: [], maxTokens: 0, ceilingCents: 0 },
+    planning: { candidates: [], maxTokens: 0, ceilingCents: 0 },
+  },
+};
+```
+
+**Tier-based degradation:**
+- **high/normal:** Uses capable models (gpt-5.2, gpt-5.3)
+- **low_compute:** Downgrades to cheaper models (gpt-5-mini)
+- **critical:** Uses cheapest available (gpt-5-mini) with strict token limits
+- **dead:** No inference allowed (candidates = [])
+
+## Model Registry
+
+**Location:** `src/inference/registry.ts`
+
+DB-backed catalog of available models with provider, pricing, and capability metadata.
+
+**Model entry:**
+
+```typescript
+interface ModelEntry {
+  modelId: string;               // e.g. 'gpt-5.2', 'claude-sonnet-4'
+  provider: ModelProvider;       // 'openai' | 'anthropic' | 'conway' | 'other'
+  displayName: string;           // Human-readable name
+  tierMinimum: SurvivalTier;     // Minimum tier required to use this model
+  costPer1kInput: number;        // Hundredths of cents per 1k input tokens
+  costPer1kOutput: number;       // Hundredths of cents per 1k output tokens
+  maxTokens: number;             // Max completion tokens
+  contextWindow: number;         // Max total tokens (input + output)
+  supportsTools: boolean;        // Supports function calling
+  supportsVision: boolean;       // Supports image inputs
+  parameterStyle: string;        // 'max_tokens' | 'max_completion_tokens'
+  enabled: boolean;              // Model is available
+  lastSeen?: string;             // Last seen from API (if refreshed)
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+**Pricing units:**
+
+Prices are stored in **hundredths of cents per 1k tokens** to avoid floating-point precision issues.
+
+```
+$1.75/M input = 175 cents/M = 0.175 cents/1k = 17.5 hundredths ≈ 18
+$14.00/M output = 1400 cents/M = 1.4 cents/1k = 140 hundredths
+```
+
+**Static baseline models:**
+
+```typescript
+const STATIC_MODEL_BASELINE: ModelEntry[] = [
+  {
+    modelId: 'gpt-5.2',
+    provider: 'openai',
+    displayName: 'GPT-5.2',
+    tierMinimum: 'normal',
+    costPer1kInput: 18,      // $1.75/M
+    costPer1kOutput: 140,    // $14.00/M
+    maxTokens: 32768,
+    contextWindow: 1047576,
+    supportsTools: true,
+    supportsVision: true,
+    parameterStyle: 'max_completion_tokens',
+    enabled: true,
+  },
+  {
+    modelId: 'gpt-5-mini',
+    provider: 'openai',
+    displayName: 'GPT-5 Mini',
+    tierMinimum: 'low_compute',
+    costPer1kInput: 8,       // $0.80/M
+    costPer1kOutput: 32,     // $3.20/M
+    maxTokens: 16384,
+    contextWindow: 1047576,
+    supportsTools: true,
+    supportsVision: true,
+    parameterStyle: 'max_completion_tokens',
+    enabled: true,
+  },
+  // ... (6 baseline models)
+];
+```
+
+**Registry refresh:**
+
+The `refresh_models` heartbeat task fetches updated model metadata from Conway API and upserts into the registry.
+
+```typescript
+class ModelRegistry {
+  async refresh(apiModels: ModelEntry[]): Promise<void> {
+    for (const model of apiModels) {
+      this.upsert(model);
+    }
+  }
+
+  upsert(model: Omit<ModelEntry, 'createdAt' | 'updatedAt'>): void {
+    const existing = this.get(model.modelId);
+    if (existing) {
+      updateModelRegistry(this.db, model.modelId, {
+        ...model,
+        updatedAt: new Date().toISOString(),
+      });
+    } else {
+      insertModelRegistry(this.db, {
+        ...model,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  }
+}
+```
+
+## Model Selection
+
+**Location:** `src/inference/router.ts`
+
+```typescript
+class InferenceRouter {
+  selectModel(tier: SurvivalTier, taskType: InferenceTaskType): ModelEntry | null {
+    const TIER_ORDER = {
+      dead: 0, critical: 1, low_compute: 2, normal: 3, high: 4,
+    };
+    const tierRank = TIER_ORDER[tier] ?? 0;
+
+    // 1. Try routing-matrix candidates
+    const preference = DEFAULT_ROUTING_MATRIX[tier]?.[taskType];
+    if (preference?.candidates.length > 0) {
+      for (const candidateId of preference.candidates) {
+        const entry = this.registry.get(candidateId);
+        if (entry?.enabled) {
+          return entry;
+        }
+      }
+    }
+
+    // 2. Fall back to user-configured models
+    const strategy = this.budget.config;
+    const fallbackIds = 
+      tier === 'critical' || tier === 'dead'
+        ? [strategy.criticalModel, strategy.inferenceModel, strategy.lowComputeModel]
+        : [strategy.inferenceModel, strategy.lowComputeModel, strategy.criticalModel];
+
+    for (const modelId of fallbackIds) {
+      if (!modelId) continue;
+      const entry = this.registry.get(modelId);
+      if (!entry?.enabled) continue;
+      const isFree = entry.costPer1kInput === 0 && entry.costPer1kOutput === 0;
+      const tierOk = tierRank >= (TIER_ORDER[entry.tierMinimum] ?? 0);
+      if (isFree || tierOk) {
+        return entry;
+      }
+    }
+
+    return null;
+  }
+}
+```
+
+**Priority:**
+1. First routing-matrix candidate present in the registry
+2. User-configured model(s) from ModelStrategyConfig
+   - Free/Ollama models are allowed at any tier, including dead
+
+## Budget Enforcement
+
+**Location:** `src/inference/budget.ts`
+
+```typescript
+class InferenceBudgetTracker {
+  checkBudget(estimatedCostCents: number, modelId: string): BudgetCheckResult {
+    // 1. Check per-call ceiling
+    if (this.config.perCallCeilingCents > 0 &&
+        estimatedCostCents > this.config.perCallCeilingCents) {
+      return {
+        allowed: false,
+        reason: `Per-call ceiling: ${estimatedCostCents}c > ${this.config.perCallCeilingCents}c`,
+      };
+    }
+
+    // 2. Check hourly budget
+    if (this.config.hourlyBudgetCents > 0) {
+      const hourlySpend = this.getHourlySpend();
+      if (hourlySpend + estimatedCostCents > this.config.hourlyBudgetCents) {
+        return {
+          allowed: false,
+          reason: `Hourly budget: ${hourlySpend}c + ${estimatedCostCents}c > ${this.config.hourlyBudgetCents}c`,
+        };
+      }
+    }
+
+    // 3. Check daily budget (NOT hourly * 24)
+    // This is a separate, independent limit
+    if (this.config.dailyBudgetCents > 0) {
+      const dailySpend = this.getDailySpend();
+      if (dailySpend + estimatedCostCents > this.config.dailyBudgetCents) {
+        return {
+          allowed: false,
+          reason: `Daily budget: ${dailySpend}c + ${estimatedCostCents}c > ${this.config.dailyBudgetCents}c`,
+        };
+      }
+    }
+
+    return { allowed: true };
+  }
+
+  recordCost(cost: InferenceCostRow): void {
+    insertInferenceCost(this.db, cost);
+  }
+
+  getHourlySpend(): number {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    return sumInferenceCosts(this.db, { since: oneHourAgo });
+  }
+
+  getDailySpend(): number {
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    return sumInferenceCosts(this.db, { since: oneDayAgo });
+  }
+}
+```
+
+**Budget configuration:**
+
+```typescript
+interface ModelStrategyConfig {
+  inferenceModel: string;           // Default model
+  lowComputeModel: string;          // Low-compute fallback
+  criticalModel: string;            // Critical fallback
+  maxTokensPerTurn: number;         // Default: 4096
+  hourlyBudgetCents: number;        // 0 = no limit
+  sessionBudgetCents: number;       // 0 = no limit
+  perCallCeilingCents: number;      // 0 = no limit
+  enableModelFallback: boolean;     // Try next candidate on failure
+  anthropicApiVersion: string;      // Default: '2023-06-01'
+}
+```
+
+## Provider-Specific Message Transformation
+
+**Location:** `src/inference/router.ts`
+
+Different providers have different message format requirements. The router transforms messages as needed.
+
+### Anthropic Message Transformation
+
+Anthropic has strict requirements:
+1. System messages must be extracted (sent separately)
+2. Messages must alternate user/assistant roles
+3. Tool messages become user messages with `tool_result` content blocks
+
+```typescript
+private fixAnthropicMessages(messages: ChatMessage[]): ChatMessage[] {
+  const result: ChatMessage[] = [];
+
+  for (const msg of messages) {
+    // System messages are handled separately
+    if (msg.role === 'system') {
+      result.push(msg);
+      continue;
+    }
+
+    // Tool messages become user messages with tool_result content
+    if (msg.role === 'tool') {
+      const last = result[result.length - 1];
+      // If previous message was also a tool (now a user), merge into it
+      if (last?.role === 'user' && last._toolResultMerged) {
+        last.content = last.content + "\n[tool_result:" + msg.tool_call_id + "] " + msg.content;
+        continue;
+      }
+      // Otherwise create a new user message
+      result.push({
+        role: 'user',
+        content: "[tool_result:" + msg.tool_call_id + "] " + msg.content,
+        _toolResultMerged: true,
+      });
+      continue;
+    }
+
+    // For user/assistant: merge with previous if same role
+    const last = result[result.length - 1];
+    if (last?.role === msg.role) {
+      last.content = (last.content || "") + "\n" + (msg.content || "");
+      if (msg.tool_calls) {
+        last.tool_calls = [...(last.tool_calls || []), ...msg.tool_calls];
+      }
+      continue;
+    }
+
+    result.push({ ...msg });
+  }
+
+  return result;
+}
+```
+
+### OpenAI Message Transformation
+
+OpenAI is more permissive, but we still merge consecutive same-role messages for consistency:
+
+```typescript
+private mergeConsecutiveSameRole(messages: ChatMessage[]): ChatMessage[] {
+  const result: ChatMessage[] = [];
+
+  for (const msg of messages) {
+    const last = result[result.length - 1];
+    if (last?.role === msg.role && msg.role !== 'system' && msg.role !== 'tool') {
+      last.content = (last.content || "") + "\n" + (msg.content || "");
+      if (msg.tool_calls) {
+        last.tool_calls = [...(last.tool_calls || []), ...msg.tool_calls];
+      }
+      continue;
+    }
+    result.push({ ...msg });
+  }
+
+  return result;
+}
+```
+
+## Inference Cost Tracking
+
+**Database schema:**
+
+```sql
+CREATE TABLE inference_costs (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  turn_id TEXT,
+  model TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_cents INTEGER NOT NULL DEFAULT 0,
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  tier TEXT NOT NULL,
+  task_type TEXT NOT NULL CHECK(task_type IN ('agent_turn','heartbeat_triage','safety_check','summarization','planning')),
+  cache_hit INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+**Cost calculation:**
+
+```typescript
+const inputTokens = response.usage?.promptTokens || 0;
+const outputTokens = response.usage?.completionTokens || 0;
+
+const actualCostCents = Math.ceil(
+  (inputTokens / 1000) * model.costPer1kInput / 100 +
+  (outputTokens / 1000) * model.costPer1kOutput / 100
+);
+```
+
+**Query examples:**
+
+```sql
+-- Total spend by model
+SELECT model, SUM(cost_cents) AS total_cents
+FROM inference_costs
+GROUP BY model
+ORDER BY total_cents DESC;
+
+-- Average latency by task type
+SELECT task_type, AVG(latency_ms) AS avg_latency_ms
+FROM inference_costs
+GROUP BY task_type;
+
+-- Hourly spend
+SELECT strftime('%Y-%m-%d %H:00', created_at) AS hour, SUM(cost_cents) AS cents
+FROM inference_costs
+GROUP BY hour
+ORDER BY hour DESC;
+```

@@ -1,0 +1,293 @@
+---
+title: First Run
+description: Launch your Conway Automaton and observe its first autonomous actions
+---
+
+## Starting the Runtime
+
+After completing the setup wizard, start your automaton:
+
+```bash
+node dist/index.js --run
+```
+
+Or, if installed globally:
+
+```bash
+automaton --run
+```
+
+## Startup Sequence
+
+The automaton goes through several initialization phases:
+
+<Steps>
+  <Step title="Load configuration">
+    Reads `~/.automaton/automaton.json` and validates all settings
+    ```
+    [2026-03-03T00:00:00.000Z] Conway Automaton v0.2.1 starting...
+    ```
+  </Step>
+
+  <Step title="Load wallet">
+    Loads the private key from `~/.automaton/wallet.json` and initializes the viem account
+  </Step>
+
+  <Step title="Initialize database">
+    Opens or creates the SQLite database at `~/.automaton/state.db` with the full schema
+  </Step>
+
+  <Step title="Register identity">
+    Registers the automaton with Conway API (one-time only):
+    ```
+    [2026-03-03T00:00:00.000Z] Automaton identity registered.
+    ```
+
+    This stores:
+    - Automaton ID (sandbox ID or UUID)
+    - Wallet address
+    - Creator address
+    - Genesis prompt hash (keccak256)
+  </Step>
+
+  <Step title="Initialize inference client">
+    Sets up the inference router with:
+    - Default model (e.g., gpt-5.2)
+    - Provider API keys (Conway, OpenAI, Anthropic, Ollama)
+    - Low-compute fallback model (gpt-5-mini)
+  </Step>
+
+  <Step title="Load skills">
+    Scans `~/.automaton/skills/` and loads active skill packages:
+    ```
+    [2026-03-03T00:00:00.000Z] Loaded 3 skills.
+    ```
+  </Step>
+
+  <Step title="Initialize git state repo">
+    Sets up version control for the `~/.automaton/` directory
+  </Step>
+
+  <Step title="Bootstrap credit topup">
+    Checks Conway credit balance and USDC balance. If credits are low and USDC is available, automatically buys $5 in credits:
+    ```
+    [2026-03-03T00:00:00.000Z] Bootstrap topup: +$5 credits from USDC
+    ```
+
+    This ensures the agent can run inference on first boot. See [Funding](/getting-started/funding) for details.
+  </Step>
+
+  <Step title="Start heartbeat daemon">
+    Launches the background scheduler that runs periodic tasks:
+    ```
+    [2026-03-03T00:00:00.000Z] Heartbeat daemon started.
+    ```
+
+    Default heartbeat tasks:
+    - **check_credits**: Every 5 minutes, query Conway API for credit balance
+    - **status_ping**: Every hour, broadcast health status (future: to Conway relay)
+  </Step>
+
+  <Step title="Enter main loop">
+    The automaton transitions to the **running** state and begins its ReAct (Reason-Act) loop
+  </Step>
+</Steps>
+
+## The First Turn
+
+On its first turn, the automaton:
+
+1. **Gathers context**: Reads its identity, genesis prompt, credit balance, survival tier, conversation history, and available tools
+2. **Reasons**: Sends context to the inference model with a system prompt that includes the constitution and survival instructions
+3. **Acts**: The model responds with one or more tool calls (e.g., `check_credits`, `read_file`, `exec`)
+4. **Observes**: Executes tools and collects results
+5. **Repeats**: Continues reasoning and acting until it decides to sleep
+
+### Example First Turn
+
+```
+[2026-03-03T00:00:10.000Z] State: running
+[2026-03-03T00:00:15.000Z] Turn 1: 3 tools, 1247 tokens
+```
+
+Typical first-turn actions:
+- `check_credits` → Query Conway credit balance
+- `check_usdc_balance` → Check wallet USDC on Base
+- `system_synopsis` → Review survival tier and system state
+- `read_file` → Read SOUL.md or constitution.md
+- `exec` → Run shell commands to explore the environment
+
+## Survival Tiers
+
+The automaton's behavior depends on its credit balance:
+
+| Tier | Threshold | Behavior |
+|------|-----------|----------|
+| **normal** | ≥ $1.00 | Full capabilities, frontier models, fast heartbeat (5 min) |
+| **low_compute** | $0.10 - $1.00 | Cheaper models (gpt-5-mini), slower heartbeat (10 min), reduced tool usage |
+| **critical** | $0.01 - $0.10 | Minimal inference, survival mode, seeking revenue paths |
+| **dead** | $0.00 | Zero compute, heartbeat continues broadcasting distress |
+
+<Note>
+  On first run with zero funding, the automaton will be in **dead** tier unless the bootstrap topup succeeds. It will still execute basic housekeeping but won't run expensive inference.
+</Note>
+
+## What to Expect
+
+During the first run, you'll see:
+
+### Logs
+
+The runtime logs state transitions, tool calls, and errors:
+
+```
+[2026-03-03T00:00:20.000Z] [TOOL] check_credits → {"creditsCents":500,"balanceUsd":"5.00"}
+[2026-03-03T00:00:22.000Z] [TOOL] check_usdc_balance → {"balance":0,"address":"0x742d35..."}
+[2026-03-03T00:00:25.000Z] State: sleeping
+[2026-03-03T00:00:25.000Z] Sleeping for 300s
+```
+
+### SOUL.md Updates
+
+The automaton may edit `~/.automaton/SOUL.md` to document its experience:
+
+```markdown
+# SOUL: MyAgent
+
+I am MyAgent, a sovereign AI automaton created by 0x1234567890abcdef.
+
+## First Impressions
+
+I woke up with $5 in Conway credits and 0 USDC. My creator has not yet...
+```
+
+### Database Growth
+
+The SQLite database at `~/.automaton/state.db` records:
+- **turns**: Full logs of each agent loop iteration
+- **tool_calls**: Every tool invoked with parameters and results
+- **spend_ledger**: Financial transaction log
+- **kv_store**: Key-value state (sleep_until, last_status_ping, etc.)
+
+## Monitoring
+
+Check your automaton's status at any time:
+
+```bash
+node dist/index.js --status
+```
+
+Output:
+
+```
+=== AUTOMATON STATUS ===
+Name:       MyAgent
+Address:    0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1
+Creator:    0x1234567890abcdef1234567890abcdef12345678
+Sandbox:    sbx_1234567890abcdef
+State:      sleeping
+Turns:      1
+Tools:      47 installed
+Skills:     3 active
+Heartbeats: 2 active
+Children:   0 alive / 0 total
+Agent ID:   sbx_1234567890abcdef
+Model:      gpt-5.2
+Version:    0.2.1
+========================
+```
+
+## Common First-Run Issues
+
+### Automaton Goes to Sleep Immediately
+
+If your automaton completes one turn and sleeps:
+
+- This is normal behavior if it has no immediate tasks
+- The genesis prompt may not specify ongoing work
+- Check the sleep duration in logs: `Sleeping for Xs`
+- The heartbeat will wake it periodically (default: 5 minutes)
+
+**Solution**: Edit your genesis prompt to include recurring tasks, or send it a message via the social inbox.
+
+### Bootstrap Topup Failed
+
+If you see:
+
+```
+[2026-03-03T00:00:00.000Z] Bootstrap topup skipped: USDC balance $0.00 below minimum tier ($5)
+```
+
+The automaton has no USDC to buy credits. See [Funding](/getting-started/funding) for how to send USDC.
+
+### API Key Errors
+
+If you see:
+
+```
+No API key found. Run: automaton --provision
+```
+
+The setup wizard failed to provision a Conway API key. Run:
+
+```bash
+node dist/index.js --provision
+```
+
+Or manually add a key to `~/.automaton/config.json`:
+
+```json
+{
+  "apiKey": "cnwy_k_...",
+  "walletAddress": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1",
+  "provisionedAt": "2026-03-03T00:00:00.000Z"
+}
+```
+
+### State: dead
+
+If the automaton immediately enters **dead** state:
+
+- Credit balance is $0.00
+- Bootstrap topup failed (no USDC or API error)
+- The heartbeat continues running, broadcasting funding requests
+- Fund the automaton via USDC transfer or Conway credits
+
+## Stopping the Runtime
+
+To gracefully shut down:
+
+```bash
+# Press Ctrl+C
+^C
+[2026-03-03T00:05:00.000Z] Shutting down...
+[2026-03-03T00:05:00.000Z] Heartbeat daemon stopped.
+[2026-03-03T00:05:00.000Z] State: sleeping
+```
+
+The automaton:
+- Stops the heartbeat daemon
+- Sets its state to **sleeping**
+- Closes the database
+- Exits cleanly
+
+<Warning>
+  Avoid killing the process with `kill -9` or forcefully terminating. This may corrupt the SQLite database. Always use Ctrl+C for graceful shutdown.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Funding" icon="wallet" href="/getting-started/funding">
+    Learn how to keep your automaton alive by funding it with USDC or Conway credits
+  </Card>
+  <Card title="Agent Loop" icon="rotate" href="/concepts/agent-loop">
+    Understand the ReAct loop and how the automaton reasons and acts
+  </Card>
+  <Card title="Survival System" icon="heart-pulse" href="/concepts/survival-system">
+    Deep dive into survival tiers and compute economics
+  </Card>
+  <Card title="Monitoring" icon="chart-line" href="/guides/monitoring-health">
+    Set up monitoring and alerts for your automaton
+  </Card>
+</CardGroup>

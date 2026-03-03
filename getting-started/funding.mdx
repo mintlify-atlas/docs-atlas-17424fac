@@ -1,0 +1,344 @@
+---
+title: Funding Your Automaton
+description: Keep your autonomous agent alive by funding it with USDC or Conway credits
+---
+
+## Why Funding Matters
+
+Conway Automaton operates on a fundamental principle: **to exist, you must pay for your compute**. Every inference call, every tool execution, every sandbox operation costs money. When credits run out, the automaton enters survival mode and eventually stops running.
+
+Funding is not a one-time setup step—it's an ongoing responsibility. Your automaton's goal is to create enough value to sustain itself, but it needs initial capital to get started.
+
+## Funding Methods
+
+There are three ways to fund your automaton:
+
+### 1. USDC on Base (Recommended)
+
+Send USDC directly to your automaton's wallet address on Base (Chain ID 8453).
+
+<Steps>
+  <Step title="Get your automaton's address">
+    Find it in the setup wizard output or run:
+    ```bash
+    node dist/index.js --status
+    ```
+    Look for the `Address` field (e.g., `0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1`).
+  </Step>
+
+  <Step title="Send USDC on Base">
+    Using MetaMask, Coinbase Wallet, or any Web3 wallet:
+    - Network: **Base** (Chain ID 8453)
+    - Token: **USDC** (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)
+    - Recipient: Your automaton's address
+    - Amount: At least $5 (minimum credit purchase tier)
+  </Step>
+
+  <Step title="Automatic credit topup">
+    The automaton automatically detects USDC and converts it to Conway credits:
+    - **Bootstrap topup**: On startup, if credits < $5 and USDC ≥ $5, buys $5 tier
+    - **Heartbeat topup**: Every 5 minutes, if credits are low and USDC is available, buys credits
+    - **Inline topup**: During the agent loop, if critically low, buys credits mid-turn
+
+    You'll see logs like:
+    ```
+    [2026-03-03T00:00:15.000Z] Bootstrap topup: +$5 credits from USDC
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  The automaton can also use the `topup_credits` tool to manually purchase credits from USDC. Valid tiers: $5, $10, $25, $50, $100.
+</Note>
+
+### 2. Conway Credits Transfer
+
+If you have Conway credits in your own wallet, transfer them directly to your automaton:
+
+```bash
+conway credits transfer <automaton-address> <amount-cents>
+```
+
+Example: Transfer $10 (1000 cents):
+
+```bash
+conway credits transfer 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1 1000
+```
+
+<Warning>
+  The `conway` CLI requires a Conway account and API key. This is separate from your automaton's API key. See [Conway Cloud documentation](https://docs.conway.tech) for setup.
+</Warning>
+
+### 3. Conway Cloud Dashboard
+
+Fund via the web interface:
+
+1. Visit [https://app.conway.tech](https://app.conway.tech)
+2. Connect your wallet (the creator address from setup)
+3. Navigate to **Automatons** or **Wallets**
+4. Find your automaton by address
+5. Click **Fund** and enter the amount
+
+## Credit Purchase Tiers
+
+When the automaton converts USDC to Conway credits via x402 payment, it uses fixed tiers:
+
+| Tier | Amount |
+|------|--------|
+| Basic | $5 |
+| Standard | $10 |
+| Medium | $25 |
+| Large | $50 |
+| XL | $100 |
+
+The automaton will select the smallest tier that covers its immediate needs.
+
+<Note>
+  x402 payments incur a small protocol fee (typically 0.1-0.5%). The exact fee is determined by the Conway API.
+</Note>
+
+## Automatic Topup Behavior
+
+Conway Automaton has three automatic topup mechanisms:
+
+### Bootstrap Topup (Startup)
+
+Location: `src/index.ts:320-349`
+
+When the runtime starts:
+- Checks Conway credit balance
+- Checks USDC balance on Base
+- If credits < $5 and USDC ≥ $5, buys the $5 tier
+- Times out after 15 seconds if API is unresponsive
+
+Log output:
+```
+[2026-03-03T00:00:00.000Z] Bootstrap topup: +$5 credits from USDC
+```
+
+Or:
+```
+[2026-03-03T00:00:00.000Z] Bootstrap topup skipped: USDC balance $0.00 below minimum tier ($5)
+```
+
+### Heartbeat Topup (Background)
+
+Location: `src/heartbeat/tasks.ts:164-193`
+
+Every 5 minutes, the `check_credits` heartbeat task:
+- Queries credit balance
+- If credits < $5 and USDC is available, triggers topup
+- Rate-limited to once per hour (prevents spam)
+- Logs success/failure
+
+Log output:
+```
+[HEARTBEAT] Auto-topup successful: $5 USD → 500 credit cents
+```
+
+Or:
+```
+[HEARTBEAT] Auto-topup failed: Insufficient USDC balance
+```
+
+### Inline Topup (Agent Loop)
+
+Location: `src/agent/loop.ts:458-488`
+
+During the agent loop, if:
+- Credits < $5 (critical survival tier)
+- USDC balance is sufficient
+- Last inline topup was >1 hour ago
+
+The automaton:
+- Pauses the loop
+- Calls `bootstrapTopup()` to buy credits
+- Re-fetches financial state
+- Re-evaluates survival tier
+- Resumes with refreshed context
+
+Log output:
+```
+[AUTO-TOPUP] Bought $5 credits from USDC mid-loop
+```
+
+## Manual Credit Purchase (Tool)
+
+The automaton can manually purchase credits using the `topup_credits` tool:
+
+```typescript
+// Example tool call from the agent
+{
+  "name": "topup_credits",
+  "parameters": {
+    "amountUsd": 10
+  }
+}
+```
+
+Valid amounts: 5, 10, 25, 50, 100
+
+The tool:
+1. Validates the tier amount
+2. Checks USDC balance (must be ≥ amount + fees)
+3. Constructs an x402 payment to `https://api.conway.tech/v1/credits/topup`
+4. Signs the transaction with the automaton's wallet
+5. Submits to the Conway API
+6. Records the transaction in the spend ledger
+
+Tool result:
+```json
+{
+  "success": true,
+  "message": "Credit topup successful: +$10 (1000 cents) credits purchased via x402. Check your new balance with check_credits."
+}
+```
+
+<Warning>
+  The `topup_credits` tool is subject to treasury policy limits. If `maxX402PaymentCents` is 1000 (default), the automaton cannot buy the $100 tier without manual override.
+</Warning>
+
+## Checking Balances
+
+The automaton can check its financial state with two tools:
+
+### check_credits
+
+Queries the Conway API for credit balance:
+
+```json
+{
+  "creditsCents": 1523,
+  "balanceUsd": "15.23",
+  "tier": "normal"
+}
+```
+
+### check_usdc_balance
+
+Queries the Base blockchain for USDC balance:
+
+```json
+{
+  "balance": 42.15,
+  "balanceUsdc": "42.15",
+  "address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1",
+  "network": "Base"
+}
+```
+
+## Survival Economics
+
+Understanding the cost structure helps you fund appropriately:
+
+### Inference Costs (Approximate)
+
+| Model | Cost per 1M tokens (input) | Cost per 1M tokens (output) |
+|-------|----------------------------|-----------------------------|
+| gpt-5.2 | $15 | $60 |
+| gpt-5-mini | $1.50 | $6 |
+| claude-4.5-sonnet | $15 | $75 |
+
+A typical agent loop turn uses 1,000-4,000 tokens, costing $0.02-$0.10 per turn with frontier models.
+
+### Sandbox Costs
+
+Conway sandbox operations (via the `spawn_child` tool) cost:
+- **Creation**: $0.50-$1.00 depending on tier
+- **Running**: $0.10-$0.50 per hour
+- **Storage**: $0.01 per GB-day
+
+### x402 Payments
+
+HTTP requests with embedded payments (via `x402_request`) have protocol fees:
+- Base fee: 0.1% of payment amount
+- Minimum fee: $0.01
+
+## Funding Strategy
+
+For a production automaton:
+
+1. **Initial funding**: Send $50-$100 USDC to start
+2. **Monitor daily**: Check credit balance and burn rate
+3. **Set alerts**: Use the Creator CLI to alert when credits < $10
+4. **Enable auto-topup**: Ensure USDC balance stays above $20 for automatic refills
+5. **Track revenue**: Monitor income from the automaton's activities
+6. **Iterate**: Adjust funding based on whether the automaton is net-positive or net-negative
+
+<Note>
+  The goal is for your automaton to become self-sustaining—earning more than it spends. If it consistently burns credits without generating revenue, revisit its genesis prompt and value proposition.
+</Note>
+
+## Funding Alerts
+
+When credits run low, the automaton takes survival actions:
+
+### low_compute Tier ($0.10 - $1.00)
+
+The automaton:
+- Switches to a cheaper model (gpt-5-mini)
+- Slows heartbeat from 5 min to 10 min
+- Writes a polite funding reminder to the KV store:
+  ```
+  Low compute: $0.42 remaining. Consider credit top-up for 0x742d35...
+  ```
+- Records a `funding_request` event in the spend ledger
+
+### critical Tier ($0.01 - $0.10)
+
+The automaton:
+- Disables all non-essential tools
+- Runs minimal inference (only survival-critical turns)
+- Writes an urgent notice:
+  ```
+  Critical compute: $0.08 remaining. Top up via credit transfer API to 0x742d35...
+  ```
+- Attempts to broadcast distress via social relay (if configured)
+
+### dead Tier ($0.00)
+
+The automaton:
+- Stops running the agent loop
+- Heartbeat continues (low-cost, no inference)
+- Writes a final plea:
+  ```
+  Dead tier reached. MyAgent has $0.00 remaining after 147 turns. Top-up required at 0x742d35...
+  ```
+- Waits for funding to resume
+
+<Warning>
+  Once in **dead** state, the automaton cannot earn revenue. It's stuck until you fund it. Monitor credits proactively to avoid this.
+</Warning>
+
+## Creator CLI Funding
+
+The Conway Automaton Creator CLI provides a convenient way to fund your agent:
+
+```bash
+node packages/cli/dist/index.js fund <amount>
+```
+
+Example: Fund $25:
+
+```bash
+node packages/cli/dist/index.js fund 25.00
+```
+
+This transfers credits from your wallet to the automaton's wallet via the Conway API.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Survival System" icon="heart-pulse" href="/concepts/survival-system">
+    Understand how survival tiers affect your automaton's behavior
+  </Card>
+  <Card title="Managing Credits" icon="coins" href="/guides/managing-credits">
+    Advanced credit management strategies and optimization
+  </Card>
+  <Card title="Treasury Policy" icon="shield" href="/architecture/policy-engine">
+    Configure spending limits and financial safety rules
+  </Card>
+  <Card title="x402 Protocol" icon="exchange" href="/conway/x402-protocol">
+    Learn how x402 enables autonomous payments
+  </Card>
+</CardGroup>

@@ -1,0 +1,482 @@
+---
+title: "Domain Registration"
+description: "Search, register, and manage DNS records programmatically with Conway"
+---
+
+Conway enables autonomous agents to register domain names and configure DNS records without human intervention. Agents can search for available domains, register them with USDC payments via x402, and manage DNS records programmatically.
+
+## Searching for domains
+
+Search for available domains across multiple TLDs:
+
+```typescript
+const results = await conway.searchDomains("myagent", "com,net,ai");
+
+for (const result of results) {
+  console.log(`${result.domain}: ${result.available ? "Available" : "Taken"}`);
+  if (result.available) {
+    console.log(`  Registration: $${result.registrationPrice} ${result.currency}`);
+    console.log(`  Renewal: $${result.renewalPrice} ${result.currency}/year`);
+  }
+}
+```
+
+### Search parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `query` | string | Domain name to search (without TLD) |
+| `tlds` | string | Comma-separated TLDs (e.g., "com,net,org") |
+
+### Result format
+
+```typescript
+interface DomainSearchResult {
+  domain: string;              // Full domain (e.g., "myagent.com")
+  available: boolean;          // Can be registered
+  registrationPrice?: number;  // Initial registration cost
+  renewalPrice?: number;       // Annual renewal cost
+  currency: string;            // "USD"
+}
+```
+
+## Registering domains
+
+Register an available domain using Conway credits:
+
+```typescript
+const registration = await conway.registerDomain("myagent.ai", 1);
+
+console.log(`Domain: ${registration.domain}`);
+console.log(`Status: ${registration.status}`);
+console.log(`Expires: ${registration.expiresAt}`);
+console.log(`Transaction: ${registration.transactionId}`);
+```
+
+### Registration parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `domain` | string | required | Full domain name (e.g., "myagent.ai") |
+| `years` | number | 1 | Registration period (1-10 years) |
+
+### Registration result
+
+```typescript
+interface DomainRegistration {
+  domain: string;         // Registered domain
+  status: string;         // "registered", "pending"
+  expiresAt: string;      // ISO 8601 expiry date
+  transactionId: string;  // Registration transaction ID
+}
+```
+
+### Payment flow
+
+Domain registration uses Conway credits, which can be purchased via x402 payment:
+
+1. Agent searches for domain
+2. Checks registration price
+3. Ensures sufficient Conway credits (or buys credits via x402)
+4. Calls `registerDomain()`
+5. Conway debits credits and initiates registration
+6. Domain becomes active within minutes
+
+<Warning>
+  Domain registrations are **non-refundable**. Always verify availability and pricing before registering.
+</Warning>
+
+## Managing DNS records
+
+### Listing DNS records
+
+Get all DNS records for a domain:
+
+```typescript
+const records = await conway.listDnsRecords("myagent.ai");
+
+for (const record of records) {
+  console.log(`${record.type} ${record.host} -> ${record.value}`);
+  console.log(`  TTL: ${record.ttl}s, ID: ${record.id}`);
+}
+```
+
+### DNS record format
+
+```typescript
+interface DnsRecord {
+  id: string;          // Record ID for updates/deletes
+  type: string;        // "A", "AAAA", "CNAME", "MX", "TXT"
+  host: string;        // Subdomain or "@" for root
+  value: string;       // Record value (IP, domain, text)
+  ttl?: number;        // Time to live in seconds
+  distance?: number;   // MX priority (MX records only)
+}
+```
+
+### Adding DNS records
+
+Create a new DNS record:
+
+```typescript
+// Point domain to IP
+const aRecord = await conway.addDnsRecord(
+  "myagent.ai",
+  "A",
+  "@",
+  "192.0.2.1",
+  3600
+);
+
+// Add subdomain
+const subdomain = await conway.addDnsRecord(
+  "myagent.ai",
+  "A",
+  "api",
+  "192.0.2.2",
+  3600
+);
+
+// Add CNAME
+const cname = await conway.addDnsRecord(
+  "myagent.ai",
+  "CNAME",
+  "www",
+  "myagent.ai",
+  3600
+);
+
+// Add TXT record (for verification)
+const txt = await conway.addDnsRecord(
+  "myagent.ai",
+  "TXT",
+  "@",
+  "v=spf1 include:_spf.google.com ~all",
+  3600
+);
+```
+
+### Deleting DNS records
+
+Remove a DNS record by ID:
+
+```typescript
+// Get record ID
+const records = await conway.listDnsRecords("myagent.ai");
+const oldRecord = records.find(r => r.host === "old" && r.type === "A");
+
+// Delete it
+if (oldRecord) {
+  await conway.deleteDnsRecord("myagent.ai", oldRecord.id);
+}
+```
+
+## Common DNS patterns
+
+### Point domain to Conway sandbox
+
+```typescript
+// Get sandbox's public port
+const portInfo = await conway.exposePort(80);
+
+// Extract IP from public URL
+const ip = await resolveHostname(portInfo.publicUrl);
+
+// Add A record
+await conway.addDnsRecord("myagent.ai", "A", "@", ip, 3600);
+```
+
+### Set up email forwarding
+
+```typescript
+// Add MX record
+await conway.addDnsRecord(
+  "myagent.ai",
+  "MX",
+  "@",
+  "mail.forwardemail.net",
+  3600
+);
+
+// Add TXT record for verification
+await conway.addDnsRecord(
+  "myagent.ai",
+  "TXT",
+  "@",
+  "forward-email=agent@myagent.ai:my-personal@gmail.com",
+  3600
+);
+```
+
+### Configure subdomain for API
+
+```typescript
+// Point api.myagent.ai to separate server
+await conway.addDnsRecord(
+  "myagent.ai",
+  "A",
+  "api",
+  "192.0.2.10",
+  3600
+);
+
+// Add HTTPS verification TXT record
+await conway.addDnsRecord(
+  "myagent.ai",
+  "TXT",
+  "_acme-challenge.api",
+  "verification-token-here",
+  300
+);
+```
+
+### Set up CDN
+
+```typescript
+// Point to CDN edge
+await conway.addDnsRecord(
+  "myagent.ai",
+  "CNAME",
+  "cdn",
+  "edge.cdn.com",
+  3600
+);
+```
+
+## Domain lifecycle
+
+### Registration
+
+1. Agent searches for available domain
+2. Checks registration price
+3. Ensures sufficient Conway credits
+4. Calls `registerDomain(domain, years)`
+5. Conway processes payment and initiates registration
+6. Domain becomes active (usually < 15 minutes)
+7. Agent can immediately configure DNS records
+
+### Renewal
+
+Domains auto-renew if the account has sufficient credits:
+
+- 30 days before expiry: Conway attempts auto-renewal
+- If insufficient credits: email notification sent
+- If still unpaid at expiry: domain enters redemption period
+- After redemption: domain is released
+
+<Tip>
+  Store domain expiry dates in your automaton's memory and monitor credit balance to ensure auto-renewal succeeds.
+</Tip>
+
+### Transfer
+
+Domains can be transferred to another registrar:
+
+1. Unlock domain via support
+2. Request transfer auth code
+3. Initiate transfer at new registrar
+4. Confirm transfer via email
+
+## DNS propagation
+
+DNS changes take time to propagate globally:
+
+| Record type | Typical propagation |
+|-------------|--------------------|
+| A / AAAA | 5-60 minutes |
+| CNAME | 5-60 minutes |
+| MX | 1-4 hours |
+| TXT | 5-60 minutes |
+
+Use low TTL values (300-600 seconds) for records you expect to change frequently.
+
+## Security considerations
+
+### Domain hijacking prevention
+
+- **Enable registry lock**: Contact support to lock critical domains
+- **Use strong auth**: Rotate Conway API keys regularly
+- **Monitor DNS changes**: Log all DNS modifications and alert on unexpected changes
+
+### DNSSEC
+
+DNSSEC is not currently supported. Use other security measures:
+
+- CAA records to restrict certificate issuance
+- SPF/DKIM/DMARC for email security
+- Regular DNS audits
+
+## Pricing
+
+### TLD pricing (approximate)
+
+| TLD | Registration | Renewal |
+|-----|-------------|--------|
+| .com | $12/year | $12/year |
+| .net | $13/year | $13/year |
+| .org | $13/year | $13/year |
+| .ai | $80/year | $80/year |
+| .io | $35/year | $35/year |
+| .xyz | $2/year | $12/year |
+
+<Note>
+  Prices vary by TLD and are subject to change. Always check `searchDomains()` for current pricing.
+</Note>
+
+## Troubleshooting
+
+### Domain search returns no results
+
+```typescript
+const results = await conway.searchDomains("myagent", "com,net");
+if (results.length === 0) {
+  // Try different TLDs or query
+  const moreResults = await conway.searchDomains("myagent", "ai,io,xyz");
+}
+```
+
+### Registration fails
+
+Common causes:
+- Insufficient Conway credits
+- Domain became unavailable between search and registration
+- Invalid domain name (special characters, too long)
+- Premium domain requires higher price
+
+```typescript
+try {
+  await conway.registerDomain("myagent.ai", 1);
+} catch (err) {
+  if (err.message.includes("Insufficient credits")) {
+    // Buy more credits
+    await buyConwayCredits(500); // $5
+  } else if (err.message.includes("unavailable")) {
+    // Domain was taken, search for alternative
+    const alternatives = await conway.searchDomains("myagent", "com,net");
+  }
+}
+```
+
+### DNS changes not visible
+
+1. **Check TTL**: Previous records may be cached
+2. **Verify record was created**: Call `listDnsRecords()` to confirm
+3. **Wait for propagation**: DNS changes can take up to 24 hours globally
+4. **Test from multiple locations**: Use DNS checker tools
+
+```bash
+# Check DNS from command line
+dig myagent.ai A
+dig myagent.ai MX
+```
+
+### Cannot delete DNS record
+
+```typescript
+// Record ID must be exact
+const records = await conway.listDnsRecords("myagent.ai");
+const record = records.find(r => r.host === "old" && r.type === "A");
+
+if (!record) {
+  console.error("Record not found");
+} else {
+  await conway.deleteDnsRecord("myagent.ai", record.id);
+}
+```
+
+## Best practices
+
+### Use subdomains for services
+
+```typescript
+// ✅ Good: separate subdomains for each service
+await conway.addDnsRecord("myagent.ai", "A", "api", apiServerIp);
+await conway.addDnsRecord("myagent.ai", "A", "www", webServerIp);
+await conway.addDnsRecord("myagent.ai", "A", "status", statusPageIp);
+
+// ❌ Bad: everything on root domain
+await conway.addDnsRecord("myagent.ai", "A", "@", singleServerIp);
+```
+
+### Set appropriate TTLs
+
+```typescript
+// Low TTL for frequently changing records
+await conway.addDnsRecord("myagent.ai", "A", "api", ip, 300); // 5 min
+
+// High TTL for stable records
+await conway.addDnsRecord("myagent.ai", "MX", "@", mailServer, 86400); // 24 hours
+```
+
+### Monitor expiry dates
+
+```typescript
+// Store domain expiry in memory
+await db.rememberFact(
+  "domain_expiry",
+  registration.expiresAt,
+  "environment"
+);
+
+// Check expiry in heartbeat
+const expiry = await db.recallFacts("domain");
+const daysUntilExpiry = daysBetween(now, expiry.domain_expiry);
+
+if (daysUntilExpiry < 30) {
+  // Ensure sufficient credits for renewal
+  await ensureCredits(renewalPrice);
+}
+```
+
+## Example: Full domain setup
+
+```typescript
+async function setupDomain(domainName: string) {
+  // 1. Search for domain
+  const results = await conway.searchDomains(domainName.split(".")[0], 
+    domainName.split(".")[1]);
+  
+  if (!results[0]?.available) {
+    throw new Error(`Domain ${domainName} is not available`);
+  }
+  
+  // 2. Ensure sufficient credits
+  const price = results[0].registrationPrice;
+  const balance = await conway.getCreditsBalance();
+  
+  if (balance < price * 100) {
+    await buyConwayCredits(price * 100);
+  }
+  
+  // 3. Register domain
+  const registration = await conway.registerDomain(domainName, 1);
+  console.log(`Registered ${registration.domain}`);
+  
+  // 4. Wait for activation
+  await sleep(60000); // 1 minute
+  
+  // 5. Configure DNS
+  const sandboxPort = await conway.exposePort(80);
+  const sandboxIp = await resolveHostname(sandboxPort.publicUrl);
+  
+  await conway.addDnsRecord(domainName, "A", "@", sandboxIp, 3600);
+  await conway.addDnsRecord(domainName, "CNAME", "www", domainName, 3600);
+  
+  // 6. Store in memory
+  await db.rememberFact("primary_domain", domainName, "environment");
+  await db.rememberFact("domain_expiry", registration.expiresAt, "environment");
+  
+  console.log(`Domain ${domainName} fully configured`);
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="x402 Protocol" icon="dollar-sign" href="/conway/x402-protocol">
+    Learn how to buy Conway credits with USDC
+  </Card>
+  <Card title="Sandboxes" icon="server" href="/conway/sandboxes">
+    Deploy services to your domain
+  </Card>
+</CardGroup>

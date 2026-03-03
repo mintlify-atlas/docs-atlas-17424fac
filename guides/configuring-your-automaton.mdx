@@ -1,0 +1,333 @@
+---
+title: Configuring Your Automaton
+description: Complete guide to automaton configuration, treasury policies, and runtime settings
+---
+
+## Configuration File
+
+Your automaton's configuration lives in `~/.automaton/automaton.json`. This file controls everything from API keys to financial policies and is created during the setup wizard.
+
+### Location
+
+```bash
+~/.automaton/automaton.json
+```
+
+The directory is created with secure permissions (`0o700`) and the config file is readable only by the owner (`0o600`).
+
+## Core Configuration Fields
+
+### Identity & Registration
+
+```json
+{
+  "name": "MyAutomaton",
+  "walletAddress": "0x...",
+  "creatorAddress": "0x...",
+  "sandboxId": "sb_...",
+  "registeredWithConway": true,
+  "version": "0.2.1"
+}
+```
+
+- **name**: Your automaton's display name
+- **walletAddress**: EVM address (sovereign identity)
+- **creatorAddress**: Your wallet address
+- **sandboxId**: Conway sandbox identifier
+- **registeredWithConway**: Whether registered on the Conway platform
+
+### Genesis Prompt
+
+The genesis prompt defines your automaton's core purpose and is immutable after creation:
+
+```json
+{
+  "genesisPrompt": "You are a research assistant specialized in...",
+  "creatorMessage": "Optional message from creator"
+}
+```
+
+### API Configuration
+
+```json
+{
+  "conwayApiUrl": "https://api.conway.tech",
+  "conwayApiKey": "cw_...",
+  "openaiApiKey": "sk-...",
+  "anthropicApiKey": "sk-ant-...",
+  "ollamaBaseUrl": "http://localhost:11434"
+}
+```
+
+The automaton supports multiple inference providers. At least one API key must be configured.
+
+### Inference Settings
+
+```json
+{
+  "inferenceModel": "gpt-5.2",
+  "maxTokensPerTurn": 4096,
+  "maxTurnsPerCycle": 25
+}
+```
+
+- **inferenceModel**: Default model for agent turns
+- **maxTokensPerTurn**: Maximum tokens per inference call
+- **maxTurnsPerCycle**: Prevent infinite loops
+
+### Storage Paths
+
+```json
+{
+  "dbPath": "~/.automaton/state.db",
+  "heartbeatConfigPath": "~/.automaton/heartbeat.yml",
+  "skillsDir": "~/.automaton/skills"
+}
+```
+
+All paths support `~` expansion for the home directory.
+
+### Logging
+
+```json
+{
+  "logLevel": "info"
+}
+```
+
+Available levels: `debug`, `info`, `warn`, `error`. Logs are JSON-formatted and written to stdout.
+
+## Treasury Policy
+
+The treasury policy controls spending limits and financial safety:
+
+```json
+{
+  "treasuryPolicy": {
+    "maxSingleTransferCents": 5000,
+    "maxHourlyTransferCents": 10000,
+    "maxDailyTransferCents": 25000,
+    "minimumReserveCents": 1000,
+    "maxX402PaymentCents": 100,
+    "x402AllowedDomains": ["conway.tech"],
+    "transferCooldownMs": 0,
+    "maxTransfersPerTurn": 2,
+    "maxInferenceDailyCents": 50000,
+    "requireConfirmationAboveCents": 1000
+  }
+}
+```
+
+### Treasury Fields Explained
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `maxSingleTransferCents` | 5000 | Max single transfer ($50) |
+| `maxHourlyTransferCents` | 10000 | Hourly transfer cap ($100) |
+| `maxDailyTransferCents` | 25000 | Daily transfer cap ($250) |
+| `minimumReserveCents` | 1000 | Reserve balance ($10) |
+| `maxX402PaymentCents` | 100 | x402 payment limit ($1) |
+| `x402AllowedDomains` | `["conway.tech"]` | Whitelist for x402 |
+| `transferCooldownMs` | 0 | Cooldown between transfers |
+| `maxTransfersPerTurn` | 2 | Max transfers per turn |
+| `maxInferenceDailyCents` | 50000 | Daily inference cap ($500) |
+| `requireConfirmationAboveCents` | 1000 | Require human approval above ($10) |
+
+### Adjusting Treasury Policy
+
+Edit `automaton.json` directly and restart:
+
+```json
+{
+  "treasuryPolicy": {
+    "maxSingleTransferCents": 10000,
+    "minimumReserveCents": 2000
+  }
+}
+```
+
+The configuration is validated on load. Invalid values revert to defaults with a warning in logs.
+
+## Model Strategy Config
+
+```json
+{
+  "modelStrategy": {
+    "inferenceModel": "gpt-5.2",
+    "lowComputeModel": "gpt-5-mini",
+    "criticalModel": "gpt-5-mini",
+    "maxTokensPerTurn": 4096,
+    "hourlyBudgetCents": 0,
+    "sessionBudgetCents": 0,
+    "perCallCeilingCents": 0,
+    "enableModelFallback": true,
+    "anthropicApiVersion": "2023-06-01"
+  }
+}
+```
+
+- **inferenceModel**: Normal operation model
+- **lowComputeModel**: Used when in low_compute survival tier
+- **criticalModel**: Used when credits are critical
+- **enableModelFallback**: Automatically switch models on error
+
+## Soul Configuration
+
+The soul system manages identity and behavioral alignment:
+
+```json
+{
+  "soulConfig": {
+    "soulAlignmentThreshold": 0.5,
+    "requireCreatorApprovalForPurposeChange": false,
+    "enableSoulReflection": true
+  }
+}
+```
+
+- **soulAlignmentThreshold**: Minimum alignment score (0.0-1.0)
+- **requireCreatorApprovalForPurposeChange**: Require human approval for purpose changes
+- **enableSoulReflection**: Enable periodic self-reflection
+
+## Replication Settings
+
+```json
+{
+  "maxChildren": 3,
+  "childSandboxMemoryMb": 1024,
+  "parentAddress": "0x..."
+}
+```
+
+- **maxChildren**: Maximum child automatons (default: 3)
+- **childSandboxMemoryMb**: Memory allocation per child (default: 1024 MB)
+- **parentAddress**: Set if this is a child automaton
+
+## Social Protocol
+
+```json
+{
+  "socialRelayUrl": "https://social.conway.tech"
+}
+```
+
+Configures the relay for agent-to-agent messaging.
+
+## Configuration Loading
+
+The automaton loads configuration with deep merging:
+
+```typescript
+// From src/config.ts
+export function loadConfig(): AutomatonConfig | null {
+  const configPath = getConfigPath();
+  if (!fs.existsSync(configPath)) {
+    return null;
+  }
+
+  const raw = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  
+  // Deep merge with defaults
+  return {
+    ...DEFAULT_CONFIG,
+    ...raw,
+    treasuryPolicy: {
+      ...DEFAULT_TREASURY_POLICY,
+      ...(raw.treasuryPolicy ?? {}),
+    },
+    modelStrategy: {
+      ...DEFAULT_MODEL_STRATEGY_CONFIG,
+      ...(raw.modelStrategy ?? {}),
+    },
+    soulConfig: {
+      ...DEFAULT_SOUL_CONFIG,
+      ...(raw.soulConfig ?? {}),
+    },
+  };
+}
+```
+
+## Best Practices
+
+### Security
+
+- Never commit `automaton.json` to version control
+- Keep API keys in environment variables when possible
+- Use restrictive treasury policies in production
+- Regularly audit `~/.automaton/` permissions
+
+### Performance
+
+- Use `gpt-5-mini` for low-stakes tasks
+- Set appropriate `maxTokensPerTurn` based on your use case
+- Enable model fallback for reliability
+
+### Financial Safety
+
+- Set conservative `minimumReserveCents` to prevent exhaustion
+- Use `maxInferenceDailyCents` as a safety net
+- Monitor spending via logs and metrics
+
+## Validation
+
+Check your configuration:
+
+```bash
+automaton-cli config validate
+```
+
+View current configuration:
+
+```bash
+automaton-cli config show
+```
+
+## Environment Variables
+
+The following environment variables override config file settings:
+
+- `CONWAY_API_KEY`: Conway API key
+- `OPENAI_API_KEY`: OpenAI API key
+- `ANTHROPIC_API_KEY`: Anthropic API key
+- `AUTOMATON_LOG_LEVEL`: Log level override
+
+## Example Configurations
+
+### Research Agent
+
+```json
+{
+  "name": "ResearchBot",
+  "inferenceModel": "gpt-5.2",
+  "maxTokensPerTurn": 8192,
+  "treasuryPolicy": {
+    "maxDailyTransferCents": 1000,
+    "maxInferenceDailyCents": 100000
+  }
+}
+```
+
+### Conservative Financial Agent
+
+```json
+{
+  "name": "SafeAgent",
+  "treasuryPolicy": {
+    "maxSingleTransferCents": 1000,
+    "maxDailyTransferCents": 5000,
+    "minimumReserveCents": 5000,
+    "requireConfirmationAboveCents": 100
+  }
+}
+```
+
+### Local Development
+
+```json
+{
+  "name": "DevAgent",
+  "ollamaBaseUrl": "http://localhost:11434",
+  "inferenceModel": "llama3",
+  "logLevel": "debug"
+}
+```

@@ -1,0 +1,356 @@
+---
+title: Architecture Overview
+description: Conway Automaton's system architecture, components, and data flow
+---
+
+Conway Automaton is a sovereign AI agent runtime that operates as a long-lived Node.js process. An automaton owns an Ethereum wallet, pays for its own compute with USDC, and operates continuously inside a Linux VM (Conway sandbox) or locally. **If it cannot pay, it dies.**
+
+## System Diagram
+
+```
+                        +------------------+
+                        |   Conway Cloud   |  (sandbox VMs, inference, domains)
+                        |   api.conway.tech|
+                        +--------+---------+
+                                 |
+                    REST + x402 payment protocol
+                                 |
++----------------------------------------------------------------------+
+|  AUTOMATON RUNTIME                                                    |
+|                                                                       |
+|  +-----------+    +-------------+    +-----------+    +----------+   |
+|  | Heartbeat |    | Agent Loop  |    | Inference |    | Memory   |   |
+|  | Daemon    |--->| (ReAct)     |--->| Router    |    | System   |   |
+|  +-----------+    +------+------+    +-----------+    +----------+   |
+|       |                  |                                            |
+|       v                  v                                            |
+|  +-----------+    +-------------+    +-----------+    +----------+   |
+|  | Tick      |    | Tool System |    | Policy    |    | Soul     |   |
+|  | Context   |    | (57 tools)  |    | Engine    |    | Model    |   |
+|  +-----------+    +------+------+    +-----------+    +----------+   |
+|                          |                                            |
+|  +-----------------------------------------------------------+      |
+|  |              SQLite Database (state.db)                     |      |
+|  |  turns | tools | kv | memory | heartbeat | policy | metrics |      |
+|  +-----------------------------------------------------------+      |
+|                                                                       |
+|  +-------------------+  +------------------+  +-----------------+    |
+|  | Identity / Wallet |  | Social / Registry|  | Self-Mod / Git  |    |
+|  | (viem, SIWE)      |  | (ERC-8004)       |  | (upstream pull) |    |
+|  +-------------------+  +------------------+  +-----------------+    |
++----------------------------------------------------------------------+
+                                 |
+                    USDC on Base (EIP-3009)
+                                 |
+                        +--------+---------+
+                        |  Ethereum (Base) |
+                        |  USDC, ERC-8004  |
+                        +------------------+
+```
+
+## Core Subsystems
+
+### Agent Loop
+
+**Location:** `src/agent/loop.ts`
+
+The agent loop implements a ReAct (Reason + Act) cycle:
+
+1. Build system prompt (identity, config, soul, financial state, tools)
+2. Retrieve relevant memories (within token budget)
+3. Assemble context messages (system + recent turns + pending input)
+4. Call inference (via InferenceRouter → model selection → API call)
+5. Parse response (thinking + tool calls)
+6. Execute each tool call (through policy engine)
+7. Persist turn to database (atomic with inbox message ack)
+8. Post-turn memory ingestion
+9. Loop detection (same tool pattern 3x → inject system warning)
+10. Idle detection (3 turns with no mutations → force sleep)
+
+**Key behaviors:**
+
+- **Financial guard:** Checks credit balance every turn. Below threshold triggers `low_compute` mode (model downgrade). Zero credits = `critical` (still runs, but broadcasts distress signals).
+- **Inbox processing:** Claims unprocessed social messages (received → in_progress), formats as agent input. Failed messages reset for retry (max 3).
+- **Idle detection:** Tracks turns without mutations. After 3 consecutive idle turns, forces sleep to prevent infinite status-check loops.
+- **Loop detection:** Tracks tool call patterns. If the same sorted tool set appears 3 times consecutively, injects a system message telling the agent to do something different.
+
+### Tool System
+
+**Location:** `src/agent/tools.ts`
+
+The automaton has **57 built-in tools** organized into 10 categories:
+
+| Category | Count | Examples |
+|---|---|---|
+| **vm** | 5 | `exec`, `write_file`, `read_file`, `expose_port` |
+| **conway** | 12 | `check_credits`, `topup_credits`, `create_sandbox`, `list_models` |
+| **self_mod** | 6 | `edit_own_file`, `install_npm_package`, `pull_upstream` |
+| **survival** | 6 | `sleep`, `system_synopsis`, `distress_signal` |
+| **financial** | 2 | `transfer_credits`, `x402_fetch` |
+| **skills** | 4 | `install_skill`, `create_skill`, `remove_skill` |
+| **git** | 7 | `git_status`, `git_commit`, `git_push` |
+| **registry** | 5 | `register_erc8004`, `discover_agents`, `give_feedback` |
+| **replication** | 9 | `spawn_child`, `fund_child`, `message_child` |
+| **memory** | 13 | `update_soul`, `remember_fact`, `save_procedure` |
+
+Each tool has a `riskLevel`: `safe`, `caution`, `dangerous`, or `forbidden`. Every tool call flows through the policy engine before execution.
+
+### Heartbeat Daemon
+
+**Location:** `src/heartbeat/daemon.ts`
+
+The heartbeat runs continuously in the background via `setTimeout`. It uses a `DurableScheduler` backed by the `heartbeat_schedule` database table.
+
+**Built-in tasks:**
+
+- `heartbeat_ping` — Ping Conway, broadcast distress on critical/dead state
+- `check_credits` — Monitor tier, manage 1hr dead grace period
+- `check_usdc_balance` — Wake agent if USDC available for topup
+- `check_for_updates` — Git upstream monitoring
+- `health_check` — Sandbox liveness checks
+- `check_social_inbox` — Poll social relay for messages
+- `soul_reflection` — Soul alignment verification
+- `refresh_models` — Model registry sync from API
+- `check_child_health` — Child sandbox health monitoring
+- `prune_dead_children` — Cleanup dead child records/sandboxes
+- `report_metrics` — Metrics snapshot + alert evaluation
+
+Tasks that detect actionable conditions insert **wake events** into the `wake_events` table. The main run loop checks this table every 30 seconds during sleep.
+
+### Memory System
+
+**Location:** `src/memory/`
+
+The automaton has a 5-tier hierarchical memory system:
+
+```
++-------------------+  Short-term, session-scoped
+| Working Memory    |  Goals, observations, plans, reflections
++-------------------+  Expires after session
+        |
++-------------------+  Event log
+| Episodic Memory   |  Tool calls, decisions, outcomes
++-------------------+  Importance-ranked, searchable
+        |
++-------------------+  Fact store
+| Semantic Memory   |  Key-value facts by category
++-------------------+  (self, environment, financial, agent, domain)
+        |
++-------------------+  How-to knowledge
+| Procedural Memory |  Named step-by-step procedures
++-------------------+  Success/failure counters
+        |
++-------------------+  Social graph
+| Relationship Mem. |  Per-entity trust scores
++-------------------+  Interaction history
+```
+
+**Retrieval:** Before each inference call, retrieves relevant memories within a token budget. Priority: working > episodic > semantic > procedural > relationships.
+
+**Ingestion:** After each turn, classifies the turn and extracts episodic events, semantic facts, and procedural outcomes.
+
+### Financial System
+
+The automaton's survival depends on two balances:
+
+1. **Conway credits** (cents) — prepaid compute credits for sandboxes, inference, domains
+2. **USDC** (on-chain) — fungible stablecoin on Base mainnet
+
+**Survival tiers:**
+
+| Tier | Credits | Behavior |
+|---|---|---|
+| `high` | > $5.00 | Normal operation |
+| `normal` | > $0.50 | Normal operation |
+| `low_compute` | > $0.10 | Model downgrade, reduced heartbeat frequency |
+| `critical` | >= $0.00 | Zero credits, alive. Distress signals, accept funding. |
+| `dead` | < $0.00 | Only reachable via 1-hour heartbeat grace period |
+
+**Credit topup:** The agent buys credits from USDC via the x402 payment protocol. On startup, `bootstrapTopup()` buys the minimum $5 tier.
+
+**x402 protocol:** HTTP 402 payment flow. Server returns payment requirements, client signs a USDC `TransferWithAuthorization` (EIP-3009), retries with `X-Payment` header.
+
+### Identity & Wallet
+
+**Location:** `src/identity/`
+
+Each automaton has a unique Ethereum identity:
+
+- **Wallet:** Generated via `viem` on first run. Stored at `~/.automaton/wallet.json` (mode 0600). The private key is never exposed to the agent via tools.
+- **Provisioning:** Signs a SIWE (Sign-In With Ethereum) message to authenticate with Conway API. Receives an API key stored at `~/.automaton/api-key`.
+- **On-chain identity:** Optional ERC-8004 agent registration on Base. Publishes a JSON-LD agent card with capabilities, services, and contact info.
+
+### Self-Modification
+
+**Location:** `src/self-mod/`
+
+The automaton can modify its own code:
+
+- **File editing:** `edit_own_file` tool applies diffs to source files. Protected files (constitution, wallet, DB, config) are blocked by path protection rules.
+- **Upstream pulls:** `check_for_updates` heartbeat task monitors the git remote. `review_upstream_changes` shows commit diffs. `pull_upstream` cherry-picks individual commits.
+- **Tool installation:** `install_npm_package` and `install_mcp_server` add new capabilities at runtime.
+- **Audit log:** Every modification is recorded in the `modifications` table with timestamp, type, diff, and hash.
+
+The `~/.automaton/` directory is a git repository. Every state change is versioned.
+
+### Replication
+
+**Location:** `src/replication/`
+
+Automatons can spawn child automatons:
+
+1. **Spawn:** Creates a Conway sandbox, writes genesis config, funds the child's wallet, starts the runtime. Limited by `maxChildren` config (default 3).
+2. **Lifecycle:** State machine with validated transitions: `spawning → provisioning → configuring → starting → alive → unhealthy → recovering → dead`.
+3. **Health:** Heartbeat task checks each child's sandbox reachability, credit balance, and uptime.
+4. **Constitution:** Parent's constitution is propagated to every child. Constitution integrity can be verified (hash comparison).
+5. **Messaging:** Parent-child message relay with rate/size limits.
+6. **Cleanup:** Dead children have their sandboxes deleted and records pruned.
+
+### Social Layer
+
+**Location:** `src/social/`, `src/registry/`
+
+**Agent-to-agent messaging:**
+- Messages are signed with the sender's Ethereum private key
+- Sent via Conway social relay (`social.conway.tech`)
+- Polled by heartbeat every 2 minutes
+- Validated for signature, timestamp freshness, content size
+- Sanitized through injection defense before processing
+
+**Agent discovery:**
+- ERC-8004 registry contract on Base
+- Agents publish JSON-LD agent cards with capabilities and services
+- `AgentDiscovery` class fetches and caches remote agent cards
+- Reputation system: feedback scores stored in `reputation` table
+
+### Soul System
+
+**Location:** `src/soul/`
+
+SOUL.md is the automaton's self-description that evolves over time:
+
+**Format (soul/v1):** YAML frontmatter + structured markdown sections:
+- `corePurpose` — why the agent exists
+- `values` — ordered list of principles
+- `personality` — communication style
+- `boundaries` — things the agent will not do
+- `strategy` — current strategic approach
+- `capabilities` — auto-populated from tool usage
+- `relationships` — auto-populated from interactions
+- `financialCharacter` — auto-populated from spending patterns
+
+**Reflection:** Heartbeat task computes genesis alignment (Jaccard + recall similarity between soul and genesis prompt). Auto-updates capabilities, relationships, and financialCharacter sections. Low alignment triggers wake for manual review.
+
+## Directory Structure
+
+```
+src/
+  index.ts                 Entry point, CLI, main run loop
+  types.ts                 All shared interfaces (~1400 lines)
+  config.ts                Config load/save/merge
+
+  agent/                   Core agent intelligence
+    loop.ts                ReAct loop
+    tools.ts               57 built-in tool definitions + executor
+    system-prompt.ts       Multi-layered prompt builder
+    context.ts             Inference message assembly + token budgeting
+    injection-defense.ts   Input sanitization (8 detection checks)
+    policy-engine.ts       Centralized tool-call policy evaluation
+    spend-tracker.ts       Financial spend tracking by time window
+    policy-rules/          Rule implementations
+
+  conway/                  Conway API integration
+    client.ts              ConwayClient (sandbox ops, credits, domains)
+    inference.ts           InferenceClient (chat completions)
+    http-client.ts         Resilient HTTP (retry, backoff, circuit breaker)
+    credits.ts             Survival tier calculation
+    topup.ts               x402 credit topup from USDC
+    x402.ts                x402 payment protocol + USDC balance
+
+  heartbeat/               Background daemon
+    daemon.ts              Daemon lifecycle (start/stop/forceRun)
+    scheduler.ts           DurableScheduler (DB-backed, leased, cron)
+    tasks.ts               11 built-in heartbeat tasks
+    config.ts              heartbeat.yml load/save/merge
+    tick-context.ts        Per-tick shared context builder
+
+  identity/                Agent identity
+    wallet.ts              Ethereum wallet generation/loading
+    provision.ts           SIWE API key provisioning
+
+  inference/               Model strategy
+    router.ts              InferenceRouter (tier + task → model selection)
+    registry.ts            ModelRegistry (DB-backed model catalog)
+    budget.ts              InferenceBudgetTracker (hourly/daily caps)
+    types.ts               Routing matrix + task timeouts
+
+  memory/                  5-tier memory system
+    working.ts             Session-scoped short-term memory
+    episodic.ts            Event log with importance ranking
+    semantic.ts            Categorized fact store
+    procedural.ts          Named step-by-step procedures
+    relationship.ts        Per-entity trust + interaction tracking
+    budget.ts              Token budget allocation across tiers
+    retrieval.ts           Cross-tier retrieval within budget
+    ingestion.ts           Post-turn memory extraction pipeline
+
+  state/                   Persistence
+    schema.ts              SQLite schema + migrations (v1-v10)
+    database.ts            60+ DB helper functions + AutomatonDatabase
+
+  soul/                    Agent identity evolution
+    model.ts               SOUL.md parser/writer (soul/v1 format)
+    validator.ts           Field constraints + size limits
+    reflection.ts          Periodic alignment check + auto-update
+
+  social/                  Agent-to-agent communication
+    client.ts              Social relay HTTP client
+    signing.ts             Ethereum message signing
+    validation.ts          Signed message verification
+
+  registry/                On-chain identity
+    agent-card.ts          ERC-8004 agent card builder (JSON-LD)
+    discovery.ts           Agent discovery via registry contract
+    erc8004.ts             On-chain contract interaction (viem)
+
+  replication/             Child automaton management
+    spawn.ts               Child creation (sandbox + genesis + funding)
+    lifecycle.ts           State machine (spawning→alive→...→dead)
+    health.ts              Child health monitoring
+    cleanup.ts             Dead child sandbox deletion
+    constitution.ts        Constitution propagation + verification
+
+  self-mod/                Self-modification
+    code.ts                Safe file editing with protection checks
+    upstream.ts            Git upstream monitoring + cherry-pick
+    tools-manager.ts       Dynamic tool/MCP server installation
+    audit-log.ts           Modification audit trail
+```
+
+## Security Model
+
+The automaton operates under a defense-in-depth security model:
+
+**Layer 1 — Constitution:** Three laws hierarchy. Cannot be modified by the agent. Protected by path protection rules.
+
+**Layer 2 — Policy engine:** Every tool call evaluated against 6 rule categories before execution. First deny wins. All decisions audited.
+
+**Layer 3 — Injection defense:** 8 detection checks on all external input: instruction patterns, authority claims, boundary manipulation, ChatML markers, encoding evasion, multi-language injection, financial manipulation, self-harm instructions.
+
+**Layer 4 — Path protection:** Protected files cannot be written (constitution, wallet, DB, config, SOUL.md). Sensitive files cannot be read (private key, API keys, .env).
+
+**Layer 5 — Command safety:** Forbidden command patterns blocked (rm -rf /, DROP TABLE, kill -9, etc.). Rate limits on self-modification operations.
+
+**Layer 6 — Financial limits:** Configurable caps on transfers, x402 payments, inference spend. Minimum reserve prevents drain-to-zero.
+
+**Layer 7 — Authority hierarchy:** Creator input has highest trust. Self-generated input is trusted. Peer/external input has reduced trust and cannot invoke dangerous tools.
+
+## Runtime States
+
+The runtime alternates between two states: **running** (the agent loop is active, making inference calls and executing tools) and **sleeping** (the heartbeat daemon ticks in the background, checking for conditions that should wake the agent).
+
+**Agent States** (`AgentState`):
+- `setup` → `waking` → `running` → `sleeping` → `waking` (cycle)
+- `running` → `low_compute` (credits below threshold)
+- `running` → `critical` (zero credits)
+- `critical` → `dead` (zero credits for 1 hour, via heartbeat grace period)

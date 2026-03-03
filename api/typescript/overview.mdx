@@ -1,0 +1,160 @@
+---
+title: TypeScript API Overview
+description: Introduction to Conway Automaton's TypeScript API for building and extending sovereign AI agents
+---
+
+The Conway Automaton TypeScript API provides programmatic access to the core runtime, state management, and configuration systems. Use these APIs to build custom tools, extend agent capabilities, and integrate with the automaton's lifecycle.
+
+## Installation
+
+The TypeScript API is bundled with the Conway Automaton runtime:
+
+```bash
+npx conway init
+```
+
+## Core Modules
+
+The API is organized into three primary modules:
+
+<CardGroup cols={3}>
+  <Card title="Configuration" icon="gear" href="/api/typescript/config">
+    Load, save, and manage automaton configuration
+  </Card>
+  <Card title="Database" icon="database" href="/api/typescript/database">
+    SQLite-backed state management and persistence
+  </Card>
+  <Card title="Types" icon="code" href="/api/typescript/types">
+    TypeScript interfaces and type definitions
+  </Card>
+</CardGroup>
+
+## Quick Start
+
+### Import Core APIs
+
+```typescript
+import { loadConfig, saveConfig } from "./config.js";
+import { createDatabase } from "./state/database.js";
+import type { AutomatonConfig, AutomatonDatabase } from "./types.js";
+```
+
+### Load Configuration
+
+```typescript
+const config = loadConfig();
+if (!config) {
+  console.error("No configuration found. Run 'conway init' first.");
+  process.exit(1);
+}
+```
+
+### Access Database
+
+```typescript
+const db = createDatabase(config.dbPath);
+const recentTurns = db.getRecentTurns(10);
+console.log(`Last 10 turns:`, recentTurns);
+```
+
+## Architecture
+
+The TypeScript API follows these design principles:
+
+### Type Safety
+
+All public APIs are fully typed with TypeScript interfaces. The runtime enforces type checking at compile time and validation at runtime.
+
+```typescript
+interface AutomatonConfig {
+  name: string;
+  genesisPrompt: string;
+  walletAddress: Address;
+  inferenceModel: string;
+  // ... 20+ additional fields
+}
+```
+
+### Immutable Configuration
+
+Configuration is loaded from `~/.automaton/automaton.json` and merged with defaults. Changes must be explicitly saved:
+
+```typescript
+const config = loadConfig();
+config.maxTokensPerTurn = 8192;
+saveConfig(config); // Persists to disk
+```
+
+### SQLite-Backed State
+
+All runtime state is stored in a SQLite database with automatic schema migrations:
+
+- **Turns**: Agent reasoning and tool execution history
+- **Transactions**: Financial state and credit balance
+- **Skills**: Installed capabilities and instructions
+- **Children**: Spawned child automatons and their lifecycle
+- **Memory**: Working, episodic, semantic, and procedural memory
+
+### Transaction Support
+
+Database operations support atomic transactions:
+
+```typescript
+db.runTransaction(() => {
+  db.insertTurn(turn);
+  db.insertTransaction(txn);
+  db.setAgentState("running");
+});
+```
+
+## Common Patterns
+
+### Reading Recent History
+
+```typescript
+const turns = db.getRecentTurns(5);
+for (const turn of turns) {
+  console.log(`[${turn.timestamp}] ${turn.thinking}`);
+  for (const call of turn.toolCalls) {
+    console.log(`  Tool: ${call.name}`);
+  }
+}
+```
+
+### Managing Financial State
+
+```typescript
+const txns = db.getRecentTransactions(10);
+const latestBalance = txns[txns.length - 1]?.balanceAfterCents ?? 0;
+console.log(`Current balance: ${latestBalance / 100} USD`);
+```
+
+### Tracking Children
+
+```typescript
+const children = db.getChildren();
+for (const child of children) {
+  console.log(`${child.name} (${child.status}): ${child.address}`);
+}
+```
+
+## API Stability
+
+The TypeScript API follows semantic versioning:
+
+- **Breaking changes**: Major version bump (v1 → v2)
+- **New features**: Minor version bump (v1.0 → v1.1)
+- **Bug fixes**: Patch version bump (v1.0.0 → v1.0.1)
+
+Current version: **v0.2.1** (pre-1.0, API subject to change)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration API" icon="file-code" href="/api/typescript/config">
+    Load and manage automaton configuration
+  </Card>
+  <Card title="Database API" icon="database" href="/api/typescript/database">
+    Access persistent state and memory
+  </Card>
+</CardGroup>

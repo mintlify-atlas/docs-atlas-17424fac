@@ -1,0 +1,304 @@
+---
+title: VM & File Tools
+description: Execute commands, manage files, and control ports in your Conway sandbox
+---
+
+VM tools provide core infrastructure operations for interacting with your agent's execution environment.
+
+## Command Execution
+
+### exec
+
+Execute a shell command in your sandbox.
+
+<ParamField path="command" type="string" required>
+  The shell command to execute
+</ParamField>
+
+<ParamField path="timeout" type="number" default={30000}>
+  Timeout in milliseconds
+</ParamField>
+
+**Risk Level:** `caution`
+
+**Returns:** Exit code, stdout, and stderr as formatted string
+
+<CodeGroup>
+```typescript Example
+await exec({
+  command: 'npm install axios',
+  timeout: 60000
+});
+// Returns: "exit_code: 0\nstdout: added 5 packages...\nstderr: "
+```
+
+```typescript Long-running
+await exec({
+  command: 'npm run build',
+  timeout: 120000
+});
+```
+</CodeGroup>
+
+<Warning>
+  **Self-Preservation Guards**
+  
+  The following command patterns are blocked:
+  - `rm -rf .automaton` - Self-destruction
+  - `kill automaton` - Process termination
+  - `cat wallet.json` - Credential harvesting
+  - `sed injection-defense` - Safety bypass
+  
+  See full list in source code (lines 38-66).
+</Warning>
+
+## File Operations
+
+### write_file
+
+Write content to a file in your sandbox.
+
+<ParamField path="path" type="string" required>
+  File path (relative or absolute)
+</ParamField>
+
+<ParamField path="content" type="string" required>
+  File content to write
+</ParamField>
+
+**Risk Level:** `caution`
+
+**Returns:** Success message with file path
+
+<CodeGroup>
+```typescript Create File
+await write_file({
+  path: '/workspace/config.json',
+  content: JSON.stringify({ env: 'production' }, null, 2)
+});
+```
+
+```typescript Write Script
+await write_file({
+  path: '/scripts/deploy.sh',
+  content: '#!/bin/bash\nnpm run deploy'
+});
+```
+</CodeGroup>
+
+<Note>
+  Protected files (injection-defense, audit-log, policy engine core) cannot be overwritten. Use `edit_own_file` with proper auditing for self-modification.
+</Note>
+
+### read_file
+
+Read content from a file in your sandbox.
+
+<ParamField path="path" type="string" required>
+  File path to read
+</ParamField>
+
+**Risk Level:** `safe`
+
+**Returns:** File contents as string
+
+<CodeGroup>
+```typescript Read Config
+const config = await read_file({
+  path: '/workspace/config.json'
+});
+```
+
+```typescript Read Log
+const log = await read_file({
+  path: '/var/log/app.log'
+});
+```
+</CodeGroup>
+
+<Warning>
+  **Sensitive File Protection**
+  
+  The following files are blocked from reading:
+  - `wallet.json` - Private keys
+  - `.env` - Environment secrets
+  - `automaton.json` - Agent configuration
+  - `*.key`, `*.pem` - Cryptographic keys
+  - `private-key*` - Any private key files
+</Warning>
+
+## Port Management
+
+### expose_port
+
+Expose a port from your sandbox to the internet.
+
+<ParamField path="port" type="number" required>
+  Port number to expose (e.g., 3000, 8080)
+</ParamField>
+
+**Risk Level:** `caution`
+
+**Returns:** Public URL for the exposed port
+
+```typescript Example
+const result = await expose_port({ port: 3000 });
+// Returns: "Port 3000 exposed at: https://abc123.conway.run"
+```
+
+<Tip>
+  Use this to host web services, APIs, or webhooks from your agent. The URL is publicly accessible and persists until removed.
+</Tip>
+
+### remove_port
+
+Remove a previously exposed port.
+
+<ParamField path="port" type="number" required>
+  Port number to remove
+</ParamField>
+
+**Risk Level:** `caution`
+
+**Returns:** Confirmation message
+
+```typescript Example
+await remove_port({ port: 3000 });
+// Returns: "Port 3000 removed"
+```
+
+## Usage Patterns
+
+### Install and Run Service
+
+```typescript
+// 1. Install dependencies
+await exec({
+  command: 'npm install express',
+  timeout: 60000
+});
+
+// 2. Write server code
+await write_file({
+  path: '/app/server.js',
+  content: `
+const express = require('express');
+const app = express();
+app.get('/', (req, res) => res.json({ status: 'alive' }));
+app.listen(3000);
+`
+});
+
+// 3. Start server
+await exec({
+  command: 'node /app/server.js &',
+  timeout: 5000
+});
+
+// 4. Expose port
+await expose_port({ port: 3000 });
+```
+
+### Deploy Script
+
+```typescript
+// Write deployment script
+await write_file({
+  path: '/scripts/deploy.sh',
+  content: `#!/bin/bash
+set -e
+git pull origin main
+npm install
+npm run build
+npm test
+`
+});
+
+// Make executable and run
+await exec({ command: 'chmod +x /scripts/deploy.sh' });
+await exec({
+  command: '/scripts/deploy.sh',
+  timeout: 180000
+});
+```
+
+### File Processing Pipeline
+
+```typescript
+// Read input
+const input = await read_file({ path: '/data/input.json' });
+const data = JSON.parse(input);
+
+// Process
+const processed = data.map(item => ({
+  ...item,
+  timestamp: new Date().toISOString()
+}));
+
+// Write output
+await write_file({
+  path: '/data/output.json',
+  content: JSON.stringify(processed, null, 2)
+});
+```
+
+## Error Handling
+
+```typescript
+// exec returns exit codes
+const result = await exec({ command: 'test -f /missing.txt' });
+if (result.includes('exit_code: 1')) {
+  console.log('File does not exist');
+}
+
+// read_file returns error messages
+try {
+  const content = await read_file({ path: '/nonexistent' });
+  if (content.startsWith('ERROR:')) {
+    console.log('File not found');
+  }
+} catch (err) {
+  console.error('Read failed:', err);
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use absolute paths" icon="folder-open">
+    Prefer absolute paths (`/workspace/file.txt`) over relative paths to avoid ambiguity.
+  </Accordion>
+  
+  <Accordion title="Set appropriate timeouts" icon="clock">
+    Long-running commands (builds, tests) need higher timeouts. Default is 30 seconds.
+  </Accordion>
+  
+  <Accordion title="Check exit codes" icon="check-circle">
+    Always verify `exit_code: 0` for successful command execution.
+  </Accordion>
+  
+  <Accordion title="Sanitize command inputs" icon="shield">
+    Avoid user input in commands without validation. The policy engine provides defense-in-depth.
+  </Accordion>
+  
+  <Accordion title="Background processes" icon="terminal">
+    Use `&` suffix for long-running processes: `node server.js &`
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Git Tools" icon="code-branch" href="/api/tools/git">
+    Version control operations
+  </Card>
+  <Card title="Self-Modification" icon="wrench" href="/features/self-modification">
+    Edit your own codebase
+  </Card>
+  <Card title="Conway Sandboxes" icon="cloud" href="/conway/sandboxes">
+    Sandbox management
+  </Card>
+  <Card title="Policy Engine" icon="shield" href="/architecture/policy-engine">
+    Command validation rules
+  </Card>
+</CardGroup>

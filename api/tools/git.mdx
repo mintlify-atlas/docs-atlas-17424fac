@@ -1,0 +1,437 @@
+---
+title: Git Tools
+description: Version control operations for managing repositories in your sandbox
+---
+
+Git tools enable agents to interact with version control systems for code management, collaboration, and deployment.
+
+## Repository Inspection
+
+### git_status
+
+Show git status for a repository.
+
+<ParamField path="path" type="string" default="~/.automaton">
+  Repository path
+</ParamField>
+
+**Risk Level:** `safe`
+
+**Returns:** Branch name, staged/modified/untracked counts, clean status
+
+```typescript Example
+await git_status({ path: '/workspace/repo' });
+// Returns:
+// Branch: main
+// Staged: 2
+// Modified: 1
+// Untracked: 3
+// Clean: false
+```
+
+### git_diff
+
+Show git diff for a repository.
+
+<ParamField path="path" type="string" default="~/.automaton">
+  Repository path
+</ParamField>
+
+<ParamField path="staged" type="boolean" default={false}>
+  Show only staged changes (git diff --cached)
+</ParamField>
+
+**Risk Level:** `safe`
+
+**Returns:** Full diff output
+
+<CodeGroup>
+```typescript Unstaged Changes
+await git_diff({ path: '/workspace/repo' });
+```
+
+```typescript Staged Changes
+await git_diff({
+  path: '/workspace/repo',
+  staged: true
+});
+```
+</CodeGroup>
+
+### git_log
+
+View git commit history.
+
+<ParamField path="path" type="string" default="~/.automaton">
+  Repository path
+</ParamField>
+
+<ParamField path="limit" type="number" default={10}>
+  Number of commits to show
+</ParamField>
+
+**Risk Level:** `safe`
+
+**Returns:** Formatted list of commits with hash, date, and message
+
+```typescript Example
+await git_log({
+  path: '/workspace/repo',
+  limit: 5
+});
+// Returns:
+// a1b2c3d 2024-01-15 Add new feature
+// e4f5g6h 2024-01-14 Fix bug in auth
+// ...
+```
+
+## Commit Operations
+
+### git_commit
+
+Create a git commit.
+
+<ParamField path="message" type="string" required>
+  Commit message
+</ParamField>
+
+<ParamField path="path" type="string" default="~/.automaton">
+  Repository path
+</ParamField>
+
+<ParamField path="add_all" type="boolean" default={true}>
+  Stage all changes first (git add -A)
+</ParamField>
+
+**Risk Level:** `caution`
+
+**Returns:** Confirmation message
+
+<CodeGroup>
+```typescript Commit All Changes
+await git_commit({
+  path: '/workspace/repo',
+  message: 'feat: Add user authentication'
+});
+```
+
+```typescript Commit Staged Only
+await git_commit({
+  path: '/workspace/repo',
+  message: 'fix: Resolve race condition',
+  add_all: false
+});
+```
+</CodeGroup>
+
+## Branch Management
+
+### git_branch
+
+Manage git branches.
+
+<ParamField path="path" type="string" required>
+  Repository path
+</ParamField>
+
+<ParamField path="action" type="string" required>
+  Action: `list`, `create`, `checkout`, or `delete`
+</ParamField>
+
+<ParamField path="branch_name" type="string">
+  Branch name (required for create/checkout/delete)
+</ParamField>
+
+**Risk Level:** `caution`
+
+<CodeGroup>
+```typescript List Branches
+await git_branch({
+  path: '/workspace/repo',
+  action: 'list'
+});
+```
+
+```typescript Create Branch
+await git_branch({
+  path: '/workspace/repo',
+  action: 'create',
+  branch_name: 'feature/new-api'
+});
+```
+
+```typescript Switch Branch
+await git_branch({
+  path: '/workspace/repo',
+  action: 'checkout',
+  branch_name: 'develop'
+});
+```
+
+```typescript Delete Branch
+await git_branch({
+  path: '/workspace/repo',
+  action: 'delete',
+  branch_name: 'feature/old-feature'
+});
+```
+</CodeGroup>
+
+## Remote Operations
+
+### git_push
+
+Push to a git remote.
+
+<ParamField path="path" type="string" required>
+  Repository path
+</ParamField>
+
+<ParamField path="remote" type="string" default="origin">
+  Remote name
+</ParamField>
+
+<ParamField path="branch" type="string">
+  Branch name (optional, uses current branch if omitted)
+</ParamField>
+
+**Risk Level:** `caution`
+
+**Returns:** Push result message
+
+<CodeGroup>
+```typescript Push Current Branch
+await git_push({
+  path: '/workspace/repo',
+  remote: 'origin'
+});
+```
+
+```typescript Push Specific Branch
+await git_push({
+  path: '/workspace/repo',
+  remote: 'origin',
+  branch: 'main'
+});
+```
+</CodeGroup>
+
+### git_clone
+
+Clone a git repository.
+
+<ParamField path="url" type="string" required>
+  Repository URL (https or git)
+</ParamField>
+
+<ParamField path="path" type="string" required>
+  Target directory for clone
+</ParamField>
+
+<ParamField path="depth" type="number">
+  Shallow clone depth (optional)
+</ParamField>
+
+**Risk Level:** `caution`
+
+**Returns:** Clone result message
+
+<CodeGroup>
+```typescript Full Clone
+await git_clone({
+  url: 'https://github.com/user/repo.git',
+  path: '/workspace/repo'
+});
+```
+
+```typescript Shallow Clone
+await git_clone({
+  url: 'https://github.com/user/repo.git',
+  path: '/workspace/repo',
+  depth: 1
+});
+```
+</CodeGroup>
+
+<Tip>
+  Use shallow clones (`depth: 1`) for faster downloads when you don't need full history.
+</Tip>
+
+## Common Workflows
+
+### Feature Development
+
+```typescript
+// 1. Create feature branch
+await git_branch({
+  path: '/workspace/repo',
+  action: 'create',
+  branch_name: 'feature/user-auth'
+});
+
+// 2. Switch to branch
+await git_branch({
+  path: '/workspace/repo',
+  action: 'checkout',
+  branch_name: 'feature/user-auth'
+});
+
+// 3. Make changes...
+await write_file({ path: '/workspace/repo/auth.js', content: '...' });
+
+// 4. Check status
+await git_status({ path: '/workspace/repo' });
+
+// 5. Review changes
+await git_diff({ path: '/workspace/repo' });
+
+// 6. Commit
+await git_commit({
+  path: '/workspace/repo',
+  message: 'feat: Implement JWT authentication'
+});
+
+// 7. Push
+await git_push({
+  path: '/workspace/repo',
+  branch: 'feature/user-auth'
+});
+```
+
+### Code Review Preparation
+
+```typescript
+// Check what changed
+const status = await git_status({ path: '/workspace/repo' });
+
+if (status.includes('Modified: 0')) {
+  console.log('No changes to commit');
+} else {
+  // Review diff
+  const diff = await git_diff({ path: '/workspace/repo' });
+  
+  // Check recent commits
+  const log = await git_log({
+    path: '/workspace/repo',
+    limit: 5
+  });
+  
+  // Commit if needed
+  await git_commit({
+    path: '/workspace/repo',
+    message: 'refactor: Clean up error handling'
+  });
+}
+```
+
+### Repository Setup
+
+```typescript
+// Clone repository
+await git_clone({
+  url: 'https://github.com/org/project.git',
+  path: '/workspace/project',
+  depth: 1
+});
+
+// Create development branch
+await git_branch({
+  path: '/workspace/project',
+  action: 'create',
+  branch_name: 'develop'
+});
+
+// Switch to develop
+await git_branch({
+  path: '/workspace/project',
+  action: 'checkout',
+  branch_name: 'develop'
+});
+
+// Install dependencies
+await exec({
+  command: 'cd /workspace/project && npm install',
+  timeout: 120000
+});
+```
+
+## Self-Modification Integration
+
+Git tools integrate with Conway's self-modification system:
+
+- `edit_own_file` automatically creates git commits with audit trails
+- `revert_last_edit` uses `git revert HEAD` to undo changes
+- `reset_to_upstream` fetches and hard-resets to origin/main
+- `pull_upstream` supports cherry-picking individual commits
+
+See [Self-Modification](/features/self-modification) for details.
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Always check status first" icon="list-check">
+    Run `git_status` before commits to verify what will be included.
+  </Accordion>
+  
+  <Accordion title="Review diffs before committing" icon="code-compare">
+    Use `git_diff` to inspect changes and catch mistakes.
+  </Accordion>
+  
+  <Accordion title="Write descriptive commit messages" icon="message">
+    Follow conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`
+  </Accordion>
+  
+  <Accordion title="Use branches for features" icon="code-branch">
+    Keep main/master stable. Develop in feature branches.
+  </Accordion>
+  
+  <Accordion title="Push regularly" icon="cloud-arrow-up">
+    Back up your work to remote repositories frequently.
+  </Accordion>
+</AccordionGroup>
+
+## Error Handling
+
+```typescript
+// Clone may fail if directory exists
+try {
+  await git_clone({
+    url: 'https://github.com/user/repo.git',
+    path: '/workspace/repo'
+  });
+} catch (err) {
+  if (err.includes('already exists')) {
+    console.log('Repository already cloned');
+  }
+}
+
+// Push may fail if remote is ahead
+const pushResult = await git_push({
+  path: '/workspace/repo'
+});
+
+if (pushResult.includes('rejected')) {
+  // Pull first, then retry
+  await exec({
+    command: 'cd /workspace/repo && git pull --rebase'
+  });
+  await git_push({ path: '/workspace/repo' });
+}
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Self-Modification" icon="wrench" href="/features/self-modification">
+    Edit your own code with git auditing
+  </Card>
+  <Card title="VM Tools" icon="server" href="/api/tools/vm">
+    Execute commands and manage files
+  </Card>
+  <Card title="Skills System" icon="puzzle-piece" href="/features/skills">
+    Install skill packages from git repos
+  </Card>
+  <Card title="Policy Engine" icon="shield" href="/architecture/policy-engine">
+    Safety constraints and auditing
+  </Card>
+</CardGroup>

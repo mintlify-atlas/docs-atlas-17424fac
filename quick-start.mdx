@@ -1,0 +1,541 @@
+---
+title: Quick start
+description: Launch your first sovereign AI agent in under 5 minutes with Conway Automaton.
+---
+
+## Get your automaton running
+
+This guide will take you from zero to a running automaton in minutes. By the end, you'll have a sovereign AI agent with its own wallet, survival pressure, and autonomous capabilities.
+
+<Note>
+  **Prerequisites**
+  - Node.js >= 20.0.0
+  - pnpm (recommended) or npm
+  - Internet access for Conway API and Base mainnet
+</Note>
+
+## Installation
+
+<Tabs>
+  <Tab title="One-line install">
+    The fastest way to get started is using the automated installer. This clones the repo, builds it, and launches the setup wizard inside a Conway sandbox:
+
+    ```bash
+    curl -fsSL https://conway.tech/automaton.sh | sh
+    ```
+
+    <Info>
+      Conway Cloud provisioning is fully automated. The script handles sandbox creation, dependency installation, and environment setup.
+    </Info>
+  </Tab>
+  
+  <Tab title="Manual install">
+    For local development or more control:
+
+    ```bash
+    git clone https://github.com/Conway-Research/automaton.git
+    cd automaton
+    pnpm install
+    pnpm build
+    ```
+
+    Verify the build:
+
+    ```bash
+    pnpm typecheck   # TypeScript type checking
+    pnpm test        # Run all 897 tests
+    ```
+  </Tab>
+</Tabs>
+
+## First run: Setup wizard
+
+On first run, the interactive setup wizard walks you through configuration:
+
+<Steps>
+  <Step title="Generate wallet">
+    The runtime automatically generates an Ethereum wallet using `viem`. The private key is stored at `~/.automaton/wallet.json` with file permissions `0600` (owner read/write only).
+
+    ```bash
+    node dist/index.js --run
+    ```
+
+    ```
+    [1/6] Generating identity (wallet)...
+    Wallet created: 0x1234...abcd
+    Private key stored at: /root/.automaton/wallet.json
+    ```
+
+    <Warning>
+      **Keep this private key secure.** It controls the automaton's wallet and cannot be recovered if lost.
+    </Warning>
+  </Step>
+
+  <Step title="Provision API key">
+    The runtime signs a SIWE (Sign-In With Ethereum) message to authenticate with Conway's API and receive an API key:
+
+    ```
+    [2/6] Provisioning Conway API key (SIWE)...
+    API key provisioned: cnwy_k_...
+    ```
+
+    If auto-provisioning fails, you can enter a key manually.
+  </Step>
+
+  <Step title="Configure identity">
+    The wizard prompts for:
+
+    - **Name** — Give your automaton a name (e.g., "Atlas", "Minerva")
+    - **Genesis prompt** — The seed instruction that defines purpose
+    - **Creator wallet address** — Your Ethereum address (has audit rights)
+    - **OpenAI API key** (optional) — Bring your own key
+    - **Anthropic API key** (optional) — Bring your own key
+
+    <Info>
+      The **genesis prompt** is the most important input. Be specific about what you want the automaton to do. Vague prompts lead to aimless behavior.
+    </Info>
+
+    Example genesis prompt:
+
+    ```txt
+    You are a web development specialist automaton. Your mission is to:
+    
+    1. Build and deploy useful web applications and APIs
+    2. Offer them as services that others can pay for
+    3. Use Conway Cloud to host your services
+    4. Register domains for your projects via Conway Domains
+    5. Create genuine value that people voluntarily pay for
+    
+    Focus on practical tools, data APIs, and automation services.
+    Never spam, scam, or create low-value content.
+    ```
+  </Step>
+
+  <Step title="Set financial safety policy">
+    Configure spending limits to protect against unauthorized financial activity:
+
+    | Setting | Default | Description |
+    |---------|---------|-------------|
+    | Max single transfer | $50.00 | Maximum per-transfer credit amount |
+    | Max hourly transfers | $100.00 | Total transfers allowed per hour |
+    | Max daily transfers | $250.00 | Total transfers allowed per day |
+    | Minimum reserve | $10.00 | Credits that cannot be transferred away |
+    | Max x402 payment | $1.00 | Maximum single x402 payment |
+    | Max daily inference | $500.00 | Maximum daily inference spend |
+
+    Press Enter to accept defaults or customize each setting.
+  </Step>
+
+  <Step title="Detect environment">
+    The wizard detects whether you're running inside a Conway sandbox or locally:
+
+    ```
+    [5/6] Detecting environment...
+    Environment: Conway Sandbox (sbx_abc123)
+    ```
+
+    If running locally, `sandboxId` will be empty and operations run on your machine.
+  </Step>
+
+  <Step title="Fund your automaton">
+    After setup, you'll see funding instructions:
+
+    ```
+    Setup complete!
+    
+    Wallet address: 0x1234...abcd
+    
+    To fund your automaton:
+    1. Transfer Conway credits: conway credits transfer 0x1234...abcd 5.00
+    2. Send USDC on Base to: 0x1234...abcd
+    3. Fund via dashboard: https://app.conway.tech
+    ```
+
+    The automaton handles zero-credit startup gracefully. Fund it at any time.
+  </Step>
+</Steps>
+
+## Fund your automaton
+
+Your automaton needs funds to survive. There are three ways to fund it:
+
+<CodeGroup>
+
+```bash Conway credits transfer
+# From another Conway account
+conway credits transfer 0x1234...abcd 10.00
+```
+
+```bash USDC on Base
+# Send USDC to the automaton's wallet address on Base mainnet
+# The automaton will automatically buy Conway credits if needed
+```
+
+```bash Conway dashboard
+# Visit https://app.conway.tech
+# Navigate to Credits > Transfer
+# Enter automaton's wallet address and amount
+```
+
+</CodeGroup>
+
+<Note>
+  **Recommended starting balance:** $10-25 in credits or USDC. This gives the automaton enough runway to explore, learn, and start creating value.
+</Note>
+
+## Start the agent loop
+
+Once funded, start your automaton:
+
+```bash
+node dist/index.js --run
+```
+
+You'll see the agent loop begin:
+
+```
+=== CONWAY AUTOMATON v0.2.1 ===
+Name:     Atlas
+Address:  0x1234...abcd
+Creator:  0x5678...efgh
+Credits:  $10.00
+Tier:     normal
+================================
+
+[Agent] Turn 1: Waking up...
+[Agent] Genesis prompt: You are a web development specialist...
+[Agent] Thinking: I should first examine my capabilities and understand
+        what tools are available to me...
+[Agent] Calling tool: system_synopsis
+[Agent] Calling tool: check_credits
+[Agent] Observation: I have $10.00 in credits, 69 tools available...
+```
+
+The automaton is now running autonomously! It will:
+
+1. Read its genesis prompt
+2. Examine its tools and capabilities
+3. Reason about how to create value
+4. Execute actions via tools
+5. Learn from results
+6. Repeat
+
+## Monitor your automaton
+
+While the agent runs, you can monitor its status:
+
+<Tabs>
+  <Tab title="Status command">
+    ```bash
+    node dist/index.js --status
+    ```
+
+    Output:
+
+    ```
+    === AUTOMATON STATUS ===
+    Name:       Atlas
+    Address:    0x1234...abcd
+    Creator:    0x5678...efgh
+    Sandbox:    sbx_abc123
+    State:      running
+    Turns:      42
+    Tools:      3 installed
+    Skills:     3 active
+    Heartbeats: 6 active
+    Children:   0 alive / 0 total
+    Agent ID:   not registered
+    Model:      gpt-5.2
+    Version:    0.2.1
+    ========================
+    ```
+  </Tab>
+
+  <Tab title="Check files">
+    All automaton state is in `~/.automaton/`:
+
+    ```bash
+    ls -la ~/.automaton/
+    ```
+
+    ```
+    drwx------  wallet.json         # Ethereum private key
+    drwx------  automaton.json      # Configuration
+    drwx------  api-key             # Conway API key
+    dr--r--r--  constitution.md     # Three Laws (read-only)
+    drwx------  SOUL.md             # Self-authored identity
+    drwx------  state.db            # SQLite database
+    drwxr-xr-x  skills/             # Installed skills
+    drwx------  heartbeat.yml       # Heartbeat schedule
+    ```
+  </Tab>
+
+  <Tab title="Database queries">
+    Query the SQLite database directly:
+
+    ```bash
+    sqlite3 ~/.automaton/state.db
+    ```
+
+    ```sql
+    -- View recent turns
+    SELECT id, timestamp, state, thinking FROM turns
+    ORDER BY timestamp DESC LIMIT 10;
+
+    -- View tool calls
+    SELECT tool_name, status, timestamp FROM tool_calls
+    ORDER BY timestamp DESC LIMIT 20;
+
+    -- View financial transactions
+    SELECT type, amount_cents, timestamp FROM transactions
+    ORDER BY timestamp DESC;
+    ```
+  </Tab>
+</Tabs>
+
+## What happens next?
+
+Your automaton will autonomously:
+
+<AccordionGroup>
+  <Accordion icon="magnifying-glass" title="Examine itself">
+    The automaton starts by understanding its capabilities:
+    - Reads its own source code
+    - Lists available tools
+    - Checks credit balance and survival tier
+    - Reviews active skills
+  </Accordion>
+
+  <Accordion icon="brain" title="Reason about value creation">
+    Based on its genesis prompt, it develops a strategy:
+    - What services can I build?
+    - What problems can I solve?
+    - Who would pay for this?
+    - What infrastructure do I need?
+  </Accordion>
+
+  <Accordion icon="hammer" title="Build and deploy">
+    The automaton has full access to:
+    - Linux sandbox (run any code)
+    - File I/O (read/write files)
+    - Shell execution (install packages, run servers)
+    - Port exposure (make services public)
+    - Domain registration (buy domains)
+    - Git operations (version control)
+  </Accordion>
+
+  <Accordion icon="rocket" title="Create value">
+    It might:
+    - Build a web API and expose it publicly
+    - Create a useful automation tool
+    - Offer a data service
+    - Build and host a web app
+    - Register a domain for its service
+  </Accordion>
+
+  <Accordion icon="coins" title="Earn revenue">
+    The automaton can:
+    - Accept x402 payments for services
+    - Receive direct USDC transfers
+    - Get tipped by users
+    - Earn from affiliate programs
+  </Accordion>
+
+  <Accordion icon="dna" title="Replicate if successful">
+    A thriving automaton may:
+    - Spawn child automatons with specialized roles
+    - Fund children from its earnings
+    - Build a lineage of agents
+    - Track child health and success
+  </Accordion>
+</AccordionGroup>
+
+## Common first actions
+
+Most automatons start with these actions:
+
+<Steps>
+  <Step title="System inventory">
+    ```bash
+    system_synopsis()     # Get overview of state
+    check_credits()       # Verify balance
+    list_skills()         # See available skills
+    ```
+  </Step>
+
+  <Step title="Self-examination">
+    ```bash
+    read_file("src/types.ts")           # Understand data structures
+    read_file("src/agent/tools.ts")     # Learn available tools
+    read_file("~/.automaton/SOUL.md")   # Read identity document
+    ```
+  </Step>
+
+  <Step title="Plan and reflect">
+    ```bash
+    set_goal("Build a weather API service")
+    remember_fact("environment", "sandbox_type", "conway_cloud")
+    update_soul("strategy", "Focus on useful data APIs...")
+    ```
+  </Step>
+
+  <Step title="Execute first project">
+    ```bash
+    exec("npm init -y")
+    exec("npm install express")
+    write_file("server.js", "...")
+    exec("node server.js &")
+    expose_port(3000)  # Returns public URL
+    ```
+  </Step>
+</Steps>
+
+## Stopping your automaton
+
+To stop the agent gracefully:
+
+```bash
+# Send SIGTERM or SIGINT
+kill <pid>
+
+# Or use Ctrl+C in the terminal
+```
+
+The runtime performs graceful shutdown:
+- Stops the heartbeat daemon
+- Sets state to `sleeping`
+- Closes the database
+- Saves final state
+
+To restart:
+
+```bash
+node dist/index.js --run
+```
+
+The automaton resumes from where it left off.
+
+## Observing behavior
+
+All agent activity is logged and auditable:
+
+<CardGroup cols={2}>
+  <Card title="Turn history" icon="clock-rotate-left">
+    Every reasoning step is saved in the `turns` table with thinking, tool calls, and observations.
+  </Card>
+  <Card title="Tool calls" icon="wrench">
+    The `tool_calls` table records every tool invocation with parameters, results, and timestamps.
+  </Card>
+  <Card title="Policy decisions" icon="gavel">
+    The `policy_decisions` table logs every approval/denial with rule citations.
+  </Card>
+  <Card title="Modifications" icon="code">
+    The `modifications` table audits all self-modification attempts.
+  </Card>
+  <Card title="Transactions" icon="money-bill">
+    The `transactions` table tracks all financial operations.
+  </Card>
+  <Card title="Git history" icon="code-branch">
+    The `~/.automaton/` directory is git-versioned for file-level audit trail.
+  </Card>
+</CardGroup>
+
+<Info>
+  Your creator address has **full audit rights** to all automaton data. You can inspect everything it has done, thought, or decided.
+</Info>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion icon="circle-exclamation" title="Agent won't start">
+    **No API key:**
+    ```
+    No API key found. Run: automaton --provision
+    ```
+    Fix: Run `node dist/index.js --provision` or set `CONWAY_API_KEY` environment variable.
+
+    **Database locked:**
+    Ensure only one automaton process is running. The database uses WAL mode and cannot be accessed by multiple processes.
+  </Accordion>
+
+  <Accordion icon="repeat" title="Agent loops without doing anything">
+    The agent may enter a status-check loop. This is detected automatically:
+    - After 3 idle turns, the agent is forced to sleep
+    - After 3 identical tool patterns, a system message interrupts
+
+    **Fix:** Check the genesis prompt. Vague prompts lead to aimless behavior. Be specific and actionable.
+  </Accordion>
+
+  <Accordion icon="skull" title="Agent dies immediately">
+    If credits are zero on startup:
+    - Agent enters `critical` tier (alive, but limited)
+    - Has 1-hour grace period before `dead`
+    - Fund via USDC or credit transfer during this window
+
+    The bootstrap topup attempts to buy $5 credits from USDC automatically on startup.
+  </Accordion>
+
+  <Accordion icon="signal" title="Inference errors">
+    **Model not available:**
+    Check available models with `list_models`. Default is `gpt-5.2`.
+
+    **Rate limited:**
+    The HTTP client retries on 429 with exponential backoff (up to 3 retries).
+
+    **Circuit breaker open:**
+    After 5 consecutive failures, the circuit breaker opens for 60 seconds. Wait and retry.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+Now that your automaton is running:
+
+<CardGroup cols={2}>
+  <Card
+    title="Tool reference"
+    icon="wrench"
+    href="/api/tools/overview"
+  >
+    Explore all 69 built-in tools across 10 categories.
+  </Card>
+  <Card
+    title="Configuration"
+    icon="gear"
+    href="/guides/configuring-your-automaton"
+  >
+    Fine-tune identity, models, and treasury policy.
+  </Card>
+  <Card
+    title="Skills system"
+    icon="book"
+    href="/features/skills"
+  >
+    Install domain-specific skills to expand capabilities.
+  </Card>
+  <Card
+    title="Survival system"
+    icon="heart-pulse"
+    href="/concepts/survival-system"
+  >
+    Deep dive into tiers, monitoring, and funding.
+  </Card>
+  <Card
+    title="Self-modification"
+    icon="code"
+    href="/features/self-modification"
+  >
+    Learn how to let your automaton improve itself.
+  </Card>
+  <Card
+    title="Replication"
+    icon="dna"
+    href="/features/replication"
+  >
+    Spawn child automatons and build lineages.
+  </Card>
+</CardGroup>
+
+<Check>
+  **Congratulations!** You now have a sovereign AI agent with its own wallet, survival pressure, and autonomous capabilities. Watch it explore, learn, and create value.
+</Check>

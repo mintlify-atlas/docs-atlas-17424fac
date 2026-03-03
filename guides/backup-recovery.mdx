@@ -1,0 +1,587 @@
+---
+title: Backup & Recovery
+description: Protect your automaton's identity and state with comprehensive backup strategies
+---
+
+## What to Backup
+
+Your automaton's identity and state consist of several critical files:
+
+### Critical Files (Must Backup)
+
+#### 1. Wallet (Identity)
+
+**Location**: `~/.automaton/wallet.json`
+
+**Contains**:
+
+- Private key (EVM account)
+- Creation timestamp
+
+**Why critical**: This is your automaton's sovereign identity. Loss means permanent loss of the wallet address and any USDC/credits held.
+
+#### 2. Configuration
+
+**Location**: `~/.automaton/automaton.json`
+
+**Contains**:
+
+- API keys
+- Genesis prompt
+- Treasury policy
+- Model configuration
+- Creator information
+
+**Why critical**: Recreating from scratch requires setup wizard and API key re-entry.
+
+#### 3. State Database
+
+**Location**: `~/.automaton/state.db`
+
+**Contains**:
+
+- Agent turns (conversation history)
+- Tool calls and results
+- Transactions
+- Skills
+- Memory (episodic, semantic, procedural)
+- Heartbeat schedule
+- Children metadata
+
+**Why critical**: Loss means loss of all history, learned knowledge, and relationships.
+
+### Important Files (Should Backup)
+
+#### 4. Heartbeat Configuration
+
+**Location**: `~/.automaton/heartbeat.yml`
+
+**Contains**:
+
+- Scheduled tasks
+- Intervals and priorities
+
+**Recoverable**: Has defaults, but custom schedules are lost.
+
+#### 5. Skills
+
+**Location**: `~/.automaton/skills/*/SKILL.md`
+
+**Contains**:
+
+- Custom skill definitions
+
+**Recoverable**: If you have the source files elsewhere.
+
+### Optional Files
+
+#### 6. Logs
+
+**Location**: `~/.automaton/logs/`
+
+**Contains**:
+
+- Historical logs
+
+**Recoverable**: Not needed for operation, but useful for forensics.
+
+## Backup Strategies
+
+### Manual Backup
+
+#### Simple Tarball
+
+```bash
+# Create timestamped backup
+tar -czf ~/backups/automaton-$(date +%Y%m%d-%H%M%S).tar.gz \
+  ~/.automaton/wallet.json \
+  ~/.automaton/automaton.json \
+  ~/.automaton/state.db \
+  ~/.automaton/heartbeat.yml \
+  ~/.automaton/skills/
+
+# Verify archive
+tar -tzf ~/backups/automaton-$(date +%Y%m%d-%H%M%S).tar.gz
+```
+
+#### Encrypted Backup
+
+```bash
+# Create encrypted backup with GPG
+tar -czf - ~/.automaton/ | \
+  gpg --symmetric --cipher-algo AES256 -o ~/backups/automaton-$(date +%Y%m%d).tar.gz.gpg
+
+# Restore
+gpg --decrypt ~/backups/automaton-20260303.tar.gz.gpg | \
+  tar -xzf - -C ~/
+```
+
+### Automated Backup Script
+
+Create `~/.automaton/scripts/backup.sh`:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+BACKUP_DIR="${HOME}/backups/automaton"
+RETENTION_DAYS=30
+DATE=$(date +%Y%m%d-%H%M%S)
+
+mkdir -p "$BACKUP_DIR"
+
+# Stop automaton for consistent backup
+automaton-cli stop
+
+# Create backup
+tar -czf "${BACKUP_DIR}/automaton-${DATE}.tar.gz" \
+  ~/.automaton/wallet.json \
+  ~/.automaton/automaton.json \
+  ~/.automaton/state.db \
+  ~/.automaton/state.db-wal \
+  ~/.automaton/state.db-shm \
+  ~/.automaton/heartbeat.yml \
+  ~/.automaton/skills/
+
+# Restart automaton
+automaton-cli start
+
+# Cleanup old backups
+find "$BACKUP_DIR" -name "automaton-*.tar.gz" -mtime +$RETENTION_DAYS -delete
+
+echo "Backup completed: ${BACKUP_DIR}/automaton-${DATE}.tar.gz"
+```
+
+Schedule with cron:
+
+```bash
+# Daily backup at 2 AM
+0 2 * * * ~/.automaton/scripts/backup.sh >> ~/.automaton/logs/backup.log 2>&1
+```
+
+### Continuous Backup with Git
+
+```bash
+# Initialize git repo
+cd ~/.automaton
+git init
+
+# Gitignore for large/temporary files
+cat > .gitignore <<EOF
+logs/
+*.log
+state.db-wal
+state.db-shm
+EOF
+
+# Initial commit
+git add wallet.json automaton.json state.db heartbeat.yml skills/
+git commit -m "Initial backup"
+
+# Remote backup (encrypted private repo)
+git remote add origin git@github.com:yourusername/automaton-backup-encrypted.git
+git push -u origin main
+```
+
+Automated commits via cron:
+
+```bash
+#!/bin/bash
+cd ~/.automaton
+git add -A
+git commit -m "Backup $(date +%Y-%m-%d_%H:%M:%S)" || true
+git push origin main
+```
+
+### Cloud Backup
+
+#### AWS S3
+
+```bash
+#!/bin/bash
+BUCKET="s3://my-automaton-backups"
+DATE=$(date +%Y%m%d-%H%M%S)
+
+# Create encrypted backup and upload
+tar -czf - ~/.automaton/ | \
+  gpg --symmetric --cipher-algo AES256 | \
+  aws s3 cp - "${BUCKET}/automaton-${DATE}.tar.gz.gpg"
+
+# Lifecycle policy for retention (separate AWS CLI command)
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket my-automaton-backups \
+  --lifecycle-configuration file://lifecycle.json
+```
+
+`lifecycle.json`:
+
+```json
+{
+  "Rules": [
+    {
+      "Id": "DeleteOldBackups",
+      "Status": "Enabled",
+      "Prefix": "automaton-",
+      "Expiration": {
+        "Days": 90
+      }
+    }
+  ]
+}
+```
+
+#### Rsync to Remote Server
+
+```bash
+#!/bin/bash
+rsync -avz --delete \
+  ~/.automaton/ \
+  user@backup-server.com:/backups/automaton/
+```
+
+### Database-Specific Backup
+
+SQLite has WAL mode, so back up all three files:
+
+```bash
+# Online backup using SQLite's backup API
+sqlite3 ~/.automaton/state.db ".backup '/tmp/state-backup.db'"
+
+# Then copy backup file
+cp /tmp/state-backup.db ~/backups/state-$(date +%Y%m%d).db
+```
+
+Or use `VACUUM INTO`:
+
+```bash
+sqlite3 ~/.automaton/state.db "VACUUM INTO '/tmp/state-backup.db'"
+```
+
+## Recovery Procedures
+
+### Full Recovery from Backup
+
+```bash
+# 1. Stop automaton if running
+automaton-cli stop
+
+# 2. Backup current state (just in case)
+mv ~/.automaton ~/.automaton.old
+
+# 3. Restore from backup
+tar -xzf ~/backups/automaton-20260303-120000.tar.gz -C ~/
+
+# 4. Verify permissions
+chmod 600 ~/.automaton/wallet.json
+chmod 600 ~/.automaton/automaton.json
+chmod 700 ~/.automaton
+
+# 5. Verify integrity
+sqlite3 ~/.automaton/state.db "PRAGMA integrity_check;"
+
+# 6. Restart automaton
+automaton-cli start
+
+# 7. Verify status
+automaton-cli status
+```
+
+### Wallet Recovery
+
+If only wallet is lost but you have the private key:
+
+```json
+// Create ~/.automaton/wallet.json
+{
+  "privateKey": "0x...",
+  "createdAt": "2026-03-03T10:00:00.000Z"
+}
+```
+
+```bash
+chmod 600 ~/.automaton/wallet.json
+automaton-cli wallet verify
+```
+
+### Partial Recovery (Config Only)
+
+If database is corrupted but wallet and config are intact:
+
+```bash
+# 1. Backup corrupted database
+mv ~/.automaton/state.db ~/.automaton/state.db.corrupted
+
+# 2. Start automaton (creates new database)
+automaton-cli start
+
+# 3. Automaton will initialize fresh state
+# Note: All history is lost but identity is preserved
+```
+
+### Migrating to New Machine
+
+```bash
+# On old machine: Create backup
+tar -czf automaton-migration.tar.gz ~/.automaton/
+
+# Transfer to new machine
+scp automaton-migration.tar.gz newmachine:~/
+
+# On new machine: Extract
+tar -xzf automaton-migration.tar.gz -C ~/
+
+# Install automaton runtime
+npm install -g conway-automaton
+
+# Start automaton
+automaton-cli start
+```
+
+## Disaster Recovery Scenarios
+
+### Scenario 1: Wallet Lost, No Backup
+
+**Result**: Identity is permanently lost. All USDC/credits at that address are unrecoverable.
+
+**Recovery**:
+
+1. Run setup wizard to create new automaton
+2. Transfer USDC to new address
+3. Re-register with Conway platform
+4. Rebuild skills and configuration
+
+**Prevention**: Always backup `wallet.json` immediately after creation.
+
+### Scenario 2: Database Corrupted
+
+**Diagnosis**:
+
+```bash
+sqlite3 ~/.automaton/state.db "PRAGMA integrity_check;"
+```
+
+**Recovery**:
+
+```bash
+# Attempt recovery
+sqlite3 ~/.automaton/state.db ".recover" | sqlite3 recovered.db
+
+# Replace corrupted database
+mv ~/.automaton/state.db ~/.automaton/state.db.corrupted
+mv recovered.db ~/.automaton/state.db
+```
+
+**If unrecoverable**: Restore from backup or start fresh.
+
+### Scenario 3: Configuration Lost
+
+**Recovery**:
+
+Run setup wizard:
+
+```bash
+automaton-cli setup --wallet ~/.automaton/wallet.json
+```
+
+The wizard will:
+
+1. Detect existing wallet
+2. Prompt for API keys
+3. Regenerate configuration
+4. Preserve database if present
+
+### Scenario 4: Accidental Deletion
+
+If `~/.automaton/` is deleted:
+
+```bash
+# Check for recent backups
+ls -lht ~/backups/automaton/
+
+# Restore latest
+tar -xzf ~/backups/automaton/automaton-latest.tar.gz -C ~/
+```
+
+If no backups exist: See Scenario 1.
+
+## Security Considerations
+
+### Encrypting Backups
+
+Always encrypt backups containing:
+
+- `wallet.json` (private key)
+- `automaton.json` (API keys)
+
+**GPG encryption**:
+
+```bash
+# Encrypt
+tar -czf - ~/.automaton/ | gpg -c -o backup.tar.gz.gpg
+
+# Decrypt
+gpg -d backup.tar.gz.gpg | tar -xzf -
+```
+
+**AES encryption**:
+
+```bash
+# Encrypt
+tar -czf - ~/.automaton/ | \
+  openssl enc -aes-256-cbc -pbkdf2 -out backup.tar.gz.enc
+
+# Decrypt
+openssl enc -d -aes-256-cbc -pbkdf2 -in backup.tar.gz.enc | \
+  tar -xzf -
+```
+
+### Storing Backups
+
+**DO**:
+
+- Encrypt before uploading to cloud
+- Use separate encryption key/passphrase
+- Store backups on different physical media
+- Test restoration periodically
+- Use 3-2-1 rule: 3 copies, 2 different media, 1 offsite
+
+**DON'T**:
+
+- Store unencrypted backups in cloud storage
+- Commit `wallet.json` to git (even private repos)
+- Email backups without encryption
+- Store encryption keys with backups
+
+### Backup Permissions
+
+```bash
+# Secure backup directory
+chmod 700 ~/backups/automaton
+
+# Secure backup files
+chmod 600 ~/backups/automaton/*.tar.gz
+```
+
+## Testing Backups
+
+Regularly verify backups can be restored:
+
+```bash
+#!/bin/bash
+set -e
+
+TEST_DIR="/tmp/automaton-backup-test"
+BACKUP="~/backups/automaton/automaton-latest.tar.gz"
+
+# Extract to test directory
+mkdir -p "$TEST_DIR"
+tar -xzf "$BACKUP" -C "$TEST_DIR"
+
+# Verify critical files exist
+test -f "$TEST_DIR/.automaton/wallet.json"
+test -f "$TEST_DIR/.automaton/automaton.json"
+test -f "$TEST_DIR/.automaton/state.db"
+
+# Verify database integrity
+sqlite3 "$TEST_DIR/.automaton/state.db" "PRAGMA integrity_check;" | grep -q "ok"
+
+# Cleanup
+rm -rf "$TEST_DIR"
+
+echo "✅ Backup verified successfully"
+```
+
+Schedule monthly:
+
+```bash
+# First Monday of month at 3 AM
+0 3 1-7 * 1 ~/scripts/test-backup.sh
+```
+
+## Backup Checklist
+
+### Daily
+
+- [ ] Automated backup runs successfully
+- [ ] Backup uploaded to remote/cloud storage
+
+### Weekly
+
+- [ ] Verify backup file size is reasonable
+- [ ] Check backup logs for errors
+
+### Monthly
+
+- [ ] Test restore from backup
+- [ ] Rotate encryption keys (if using key-based encryption)
+- [ ] Review retention policy
+
+### Quarterly
+
+- [ ] Full disaster recovery drill
+- [ ] Update backup scripts
+- [ ] Audit backup storage locations
+
+## Advanced: Multi-Region Replication
+
+For critical automatons, replicate backups across regions:
+
+```bash
+#!/bin/bash
+DATE=$(date +%Y%m%d-%H%M%S)
+BACKUP_FILE="automaton-${DATE}.tar.gz.gpg"
+
+# Create encrypted backup
+tar -czf - ~/.automaton/ | gpg -c -o "/tmp/${BACKUP_FILE}"
+
+# Upload to multiple regions
+aws s3 cp "/tmp/${BACKUP_FILE}" s3://backups-us-east-1/automaton/
+aws s3 cp "/tmp/${BACKUP_FILE}" s3://backups-eu-west-1/automaton/
+aws s3 cp "/tmp/${BACKUP_FILE}" s3://backups-ap-southeast-1/automaton/
+
+# Cleanup
+rm "/tmp/${BACKUP_FILE}"
+```
+
+## Monitoring Backup Health
+
+Create alerts for backup failures:
+
+```bash
+#!/bin/bash
+LAST_BACKUP=$(ls -t ~/backups/automaton/*.tar.gz | head -1)
+BACKUP_AGE=$(( $(date +%s) - $(stat -f %m "$LAST_BACKUP") ))
+MAX_AGE=$(( 24 * 60 * 60 ))  # 24 hours
+
+if [ $BACKUP_AGE -gt $MAX_AGE ]; then
+  echo "⚠️  Backup is ${BACKUP_AGE}s old (threshold: ${MAX_AGE}s)"
+  # Send alert (email, SMS, etc.)
+  exit 1
+fi
+
+echo "✅ Backup is fresh (${BACKUP_AGE}s old)"
+```
+
+## Recovery Time Objective (RTO)
+
+Estimated recovery times:
+
+| Scenario | RTO | Data Loss |
+|----------|-----|----------|
+| Full restore from local backup | 5 minutes | Last backup |
+| Restore from cloud backup | 15 minutes | Last backup |
+| Wallet-only recovery | 2 minutes | None (if wallet backed up) |
+| Fresh start (no backup) | 30 minutes | Total loss |
+
+## Final Recommendations
+
+1. **Backup immediately after setup**: First backup right after `automaton-cli setup`
+2. **Automate backups**: Don't rely on manual backups
+3. **Test restores**: Untested backups are not backups
+4. **Encrypt everything**: Especially `wallet.json`
+5. **Multiple locations**: Follow 3-2-1 rule
+6. **Document recovery**: Keep this guide accessible
+7. **Version backups**: Use timestamps or versioning
+8. **Monitor backup health**: Alert on failures
+9. **Rotate encryption keys**: Periodically update
+10. **Keep backups secure**: Permissions, encryption, access control

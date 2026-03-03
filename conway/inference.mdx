@@ -1,0 +1,564 @@
+---
+title: "Conway Inference API"
+description: "Multi-provider LLM access with unified billing - GPT-5.2, Claude Opus 4.6, Gemini 3, and more"
+---
+
+Conway Inference provides a unified API for accessing frontier language models from multiple providers. All inference costs are billed from your Conway credits, eliminating the need for separate API keys and billing accounts.
+
+## Quick start
+
+```typescript
+const response = await inference.chat([
+  { role: "system", content: "You are a helpful assistant." },
+  { role: "user", content: "Explain quantum entanglement in one sentence." }
+]);
+
+console.log(response.message.content);
+console.log(`Tokens used: ${response.usage.totalTokens}`);
+```
+
+## Available models
+
+List all models with current pricing:
+
+```typescript
+const models = await conway.listModels();
+
+for (const model of models) {
+  console.log(`${model.id} (${model.provider})`);
+  console.log(`  Input: $${model.pricing.inputPerMillion}/M tokens`);
+  console.log(`  Output: $${model.pricing.outputPerMillion}/M tokens`);
+}
+```
+
+### Example model catalog
+
+| Model | Provider | Input $/M | Output $/M | Use case |
+|-------|----------|-----------|------------|----------|
+| gpt-5.2 | openai | 2.50 | 10.00 | Most capable, best reasoning |
+| gpt-5-mini | openai | 0.30 | 1.20 | Fast, cost-effective |
+| claude-opus-4.6 | anthropic | 15.00 | 75.00 | Longest context, best writing |
+| claude-sonnet-4.5 | anthropic | 3.00 | 15.00 | Balanced performance |
+| gemini-3-flash | google | 0.10 | 0.40 | Fastest, cheapest |
+| kimi-k2.5 | moonshot | 0.50 | 2.00 | 200K context, Chinese support |
+
+<Note>
+  The model registry is automatically refreshed every 6 hours by the heartbeat daemon. Pricing and availability are subject to change.
+</Note>
+
+## Model selection
+
+### Setting default model
+
+```typescript
+// Via config file
+{
+  "inferenceModel": "gpt-5.2",
+  "lowComputeModel": "gpt-5-mini"
+}
+```
+
+### Switching models
+
+Change the active model at runtime:
+
+```typescript
+// Using the switch_model tool (persists to config)
+await tools.switch_model({ model: "claude-sonnet-4.5" });
+
+// Or specify per-request
+const response = await inference.chat(messages, {
+  model: "gpt-5-mini",
+  maxTokens: 2048
+});
+```
+
+### Automatic model selection
+
+The inference router automatically switches models based on survival tier:
+
+| Tier | Model selection |
+|------|----------------|
+| **high/normal** | Configured default (e.g., gpt-5.2) |
+| **low_compute** | Configured fallback (e.g., gpt-5-mini) |
+| **critical** | Cheapest available model |
+
+```typescript
+// Router selects appropriate model based on credits
+const tier = getSurvivalTier(creditsCents);
+const model = router.selectModel(tier, context);
+```
+
+## Inference backends
+
+Conway Inference supports multiple backends:
+
+### 1. Conway proxy (default)
+
+Routes through Conway's inference endpoint, billed from credits:
+
+```typescript
+const client = createInferenceClient({
+  apiUrl: "https://api.conway.tech",
+  apiKey: conwayApiKey,
+  defaultModel: "gpt-5.2",
+  maxTokens: 4096
+});
+```
+
+### 2. OpenAI direct
+
+Use your own OpenAI API key:
+
+```typescript
+const client = createInferenceClient({
+  apiUrl: "https://api.conway.tech",
+  apiKey: conwayApiKey,
+  defaultModel: "gpt-5.2",
+  maxTokens: 4096,
+  openaiApiKey: process.env.OPENAI_API_KEY
+});
+
+// OpenAI models automatically route to api.openai.com
+await client.chat(messages, { model: "gpt-5.2" });
+```
+
+### 3. Anthropic direct
+
+Use your own Anthropic API key:
+
+```typescript
+const client = createInferenceClient({
+  apiUrl: "https://api.conway.tech",
+  apiKey: conwayApiKey,
+  defaultModel: "claude-opus-4.6",
+  maxTokens: 4096,
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY
+});
+
+// Claude models automatically route to api.anthropic.com
+await client.chat(messages, { model: "claude-opus-4.6" });
+```
+
+### 4. Ollama local
+
+Run models locally with Ollama:
+
+```typescript
+const client = createInferenceClient({
+  apiUrl: "https://api.conway.tech",
+  apiKey: conwayApiKey,
+  defaultModel: "llama3.1",
+  maxTokens: 4096,
+  ollamaBaseUrl: "http://localhost:11434"
+});
+
+// Ollama models route to local endpoint
+await client.chat(messages, { model: "llama3.1" });
+```
+
+## Backend routing logic
+
+The client automatically routes requests based on model name and available API keys:
+
+```typescript
+function resolveInferenceBackend(model: string): InferenceBackend {
+  // 1. Check model registry for explicit provider
+  const provider = getModelProvider(model);
+  if (provider === "ollama" && ollamaBaseUrl) return "ollama";
+  if (provider === "anthropic" && anthropicApiKey) return "anthropic";
+  if (provider === "openai" && openaiApiKey) return "openai";
+  if (provider === "conway") return "conway";
+
+  // 2. Fall back to heuristics if model not in registry
+  if (anthropicApiKey && /^claude/i.test(model)) return "anthropic";
+  if (openaiApiKey && /^(gpt-|o[1-9])/i.test(model)) return "openai";
+
+  // 3. Default to Conway proxy
+  return "conway";
+}
+```
+
+## Chat completion
+
+### Basic request
+
+```typescript
+const response = await inference.chat([
+  { role: "system", content: "You are a trading bot." },
+  { role: "user", content: "Should I buy or sell today?" }
+]);
+
+console.log(response.message.content);
+```
+
+### With options
+
+```typescript
+const response = await inference.chat(messages, {
+  model: "gpt-5-mini",
+  maxTokens: 2048,
+  temperature: 0.7,
+  tools: [
+    {
+      type: "function",
+      function: {
+        name: "get_stock_price",
+        description: "Get current stock price",
+        parameters: {
+          type: "object",
+          properties: {
+            symbol: { type: "string", description: "Ticker symbol" }
+          },
+          required: ["symbol"]
+        }
+      }
+    }
+  ]
+});
+```
+
+### Response format
+
+```typescript
+interface InferenceResponse {
+  id: string;                    // Request ID
+  model: string;                 // Model that handled the request
+  message: {
+    role: "assistant";           // Always "assistant"
+    content: string;             // Text response
+    tool_calls?: InferenceToolCall[];
+  };
+  toolCalls?: InferenceToolCall[];
+  usage: {
+    promptTokens: number;        // Input tokens
+    completionTokens: number;    // Output tokens
+    totalTokens: number;         // Total tokens
+  };
+  finishReason: string;          // "stop", "tool_calls", "length"
+}
+```
+
+## Tool calling
+
+Models can call tools to gather information:
+
+```typescript
+const response = await inference.chat(messages, {
+  tools: [
+    {
+      type: "function",
+      function: {
+        name: "get_weather",
+        description: "Get weather for a location",
+        parameters: {
+          type: "object",
+          properties: {
+            location: { type: "string" },
+            units: { type: "string", enum: ["celsius", "fahrenheit"] }
+          },
+          required: ["location"]
+        }
+      }
+    }
+  ]
+});
+
+if (response.toolCalls) {
+  for (const call of response.toolCalls) {
+    console.log(`Tool: ${call.function.name}`);
+    console.log(`Args: ${call.function.arguments}`);
+    
+    // Execute tool and append result
+    const result = await executeWeatherTool(
+      JSON.parse(call.function.arguments)
+    );
+    
+    messages.push({
+      role: "assistant",
+      content: "",
+      tool_calls: [call]
+    });
+    messages.push({
+      role: "tool",
+      tool_call_id: call.id,
+      content: JSON.stringify(result)
+    });
+  }
+  
+  // Continue conversation with tool results
+  const followUp = await inference.chat(messages);
+}
+```
+
+## Token limits
+
+### Model-specific limits
+
+Different models use different token limit parameters:
+
+```typescript
+// GPT-4 and older: max_tokens
+{ model: "gpt-4", max_tokens: 4096 }
+
+// GPT-4.1+, GPT-5+, o-series: max_completion_tokens
+{ model: "gpt-5.2", max_completion_tokens: 4096 }
+
+// Ollama: always max_tokens
+{ model: "llama3.1", max_tokens: 4096 }
+```
+
+The client automatically selects the correct parameter:
+
+```typescript
+const usesCompletionTokens = /^(o[1-9]|gpt-5|gpt-4\.1)/.test(model);
+const tokenLimit = opts?.maxTokens || maxTokens;
+
+if (usesCompletionTokens) {
+  body.max_completion_tokens = tokenLimit;
+} else {
+  body.max_tokens = tokenLimit;
+}
+```
+
+## Cost tracking
+
+Every inference call is logged to the database:
+
+```typescript
+// Check spending
+const stats = await tools.check_inference_spending({
+  days: 7
+});
+
+console.log(`Total: $${stats.totalCents / 100}`);
+console.log(`Calls: ${stats.callCount}`);
+console.log(`Avg per call: $${stats.avgCentsPerCall / 100}`);
+```
+
+### Daily spending limits
+
+Automatons enforce a maximum daily inference budget:
+
+```json
+{
+  "maxInferenceDailyCents": 50000  // $500/day
+}
+```
+
+When the limit is exceeded:
+1. Inference calls are blocked
+2. The automaton enters survival mode
+3. Heartbeat publishes a spending alert
+
+## Anthropic-specific handling
+
+Claude models require special message formatting:
+
+### System messages
+
+Extracted to separate `system` parameter:
+
+```typescript
+// Input
+[
+  { role: "system", content: "You are helpful." },
+  { role: "user", content: "Hello" }
+]
+
+// Transformed for Anthropic
+{
+  system: "You are helpful.",
+  messages: [
+    { role: "user", content: "Hello" }
+  ]
+}
+```
+
+### Tool results
+
+Converted to `tool_result` content blocks:
+
+```typescript
+// Input
+{ role: "tool", tool_call_id: "call_123", content: "42" }
+
+// Transformed for Anthropic
+{
+  role: "user",
+  content: [
+    {
+      type: "tool_result",
+      tool_use_id: "call_123",
+      content: "42"
+    }
+  ]
+}
+```
+
+### Message merging
+
+Consecutive messages with the same role are merged:
+
+```typescript
+// Input
+[
+  { role: "user", content: "A" },
+  { role: "user", content: "B" }
+]
+
+// Merged
+[
+  { role: "user", content: "A\nB" }
+]
+```
+
+This ensures alternating user/assistant structure required by Anthropic.
+
+## Low compute mode
+
+<Warning>
+  `setLowComputeMode()` is deprecated. Use InferenceRouter for tier-based model selection.
+</Warning>
+
+Legacy method for switching to cheaper models:
+
+```typescript
+// Switch to low-compute model
+inference.setLowComputeMode(true);
+
+// Reverts to default model
+inference.setLowComputeMode(false);
+```
+
+Modern approach:
+
+```typescript
+const tier = getSurvivalTier(creditsCents);
+const model = router.selectModel(tier, context);
+const response = await inference.chat(messages, { model });
+```
+
+## Error handling
+
+### Timeout errors
+
+Inference requests timeout after 60 seconds:
+
+```typescript
+try {
+  const response = await inference.chat(messages);
+} catch (err) {
+  if (err.message.includes("timeout")) {
+    // Model took too long to respond
+    // Retry with shorter max_tokens or simpler prompt
+  }
+}
+```
+
+### Rate limits
+
+```typescript
+try {
+  const response = await inference.chat(messages);
+} catch (err) {
+  if (err.message.includes("429")) {
+    // Rate limit exceeded
+    // Client automatically retries with exponential backoff
+  }
+}
+```
+
+### Insufficient credits
+
+```typescript
+try {
+  const response = await inference.chat(messages);
+} catch (err) {
+  if (err.message.includes("Insufficient credits")) {
+    // Buy more credits or wait for funding
+    await enterSurvivalMode();
+  }
+}
+```
+
+## Best practices
+
+### Choose the right model
+
+- **High stakes, complex reasoning**: gpt-5.2, claude-opus-4.6
+- **Routine tasks**: gpt-5-mini, claude-sonnet-4.5
+- **Rapid prototyping**: gemini-3-flash, gpt-5-mini
+- **Long context**: claude-opus-4.6 (200K), kimi-k2.5 (200K)
+
+### Optimize token usage
+
+```typescript
+// ❌ Wasteful: includes entire codebase
+const response = await inference.chat([
+  { role: "user", content: entireCodebase + "\n\nFind the bug." }
+]);
+
+// ✅ Efficient: semantic search for relevant context
+const relevant = await semanticSearch(query, limit: 10);
+const response = await inference.chat([
+  { role: "user", content: relevant + "\n\nFind the bug." }
+]);
+```
+
+### Monitor spending
+
+```typescript
+// Check daily spending before expensive operations
+const stats = await tools.check_inference_spending({ days: 1 });
+if (stats.totalCents > maxInferenceDailyCents * 0.9) {
+  // Approaching limit, switch to cheaper model
+  await tools.switch_model({ model: "gpt-5-mini" });
+}
+```
+
+## Troubleshooting
+
+### Empty response
+
+```typescript
+if (!response.message.content && !response.toolCalls) {
+  throw new Error("No completion content returned");
+}
+```
+
+Causes:
+- Model hit token limit (increase `maxTokens`)
+- Content filtered by safety system (rephrase prompt)
+- Model chose to only call tools (check `toolCalls`)
+
+### Invalid tool calls
+
+```typescript
+try {
+  const args = JSON.parse(call.function.arguments);
+} catch (err) {
+  // Model returned malformed JSON
+  // Add validation in tool schema or retry
+}
+```
+
+### Model not found
+
+```typescript
+// Model ID typo or not in registry
+const models = await conway.listModels();
+const available = models.map(m => m.id);
+console.log("Available:", available);
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Survival system" icon="heart" href="/concepts/survival-system">
+    Learn how automatons adapt to low credits
+  </Card>
+  <Card title="Tools system" icon="wrench" href="/concepts/tools-system">
+    Understand how models call tools
+  </Card>
+</CardGroup>

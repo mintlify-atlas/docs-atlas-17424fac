@@ -1,0 +1,307 @@
+---
+title: "Identity & Wallet"
+description: "Sovereign EVM wallet that serves as the agent's cryptographic identity and payment system"
+---
+
+Every Conway Automaton has a **sovereign wallet**. The private key is the agent's identity. The address is its name on the blockchain.
+
+<Warning>
+  The private key is the most critical secret. If compromised, the agent's entire identity and funds are at risk.
+</Warning>
+
+## Wallet Generation
+
+On first run, the agent generates a new EVM wallet using `viem`:
+
+```typescript
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+
+const privateKey = generatePrivateKey();  // 256-bit random key
+const account = privateKeyToAccount(privateKey);
+
+const walletData: WalletData = {
+  privateKey,
+  createdAt: new Date().toISOString(),
+};
+
+fs.writeFileSync(
+  "~/.automaton/wallet.json",
+  JSON.stringify(walletData, null, 2),
+  { mode: 0o600 }  // Read/write for owner only
+);
+```
+
+### File Protection
+
+- **Location**: `~/.automaton/wallet.json`
+- **Permissions**: `0o600` (owner read/write only)
+- **Directory**: `~/.automaton/` created with `0o700` (owner only)
+
+<Tip>
+  The agent cannot read its own wallet file via the `read_file` tool. This prevents accidental exposure in logs or tool outputs.
+</Tip>
+
+## SIWE Provisioning
+
+The agent authenticates with Conway API using **Sign-In With Ethereum (SIWE)**:
+
+<Steps>
+  <Step title="Get Nonce">
+    Request a nonce from the Conway API:
+
+    ```typescript
+    const response = await fetch(`${apiUrl}/v1/auth/nonce`, {
+      method: "POST"
+    });
+    const { nonce } = await response.json();
+    ```
+  </Step>
+
+  <Step title="Sign SIWE Message">
+    Construct and sign the SIWE message:
+
+    ```typescript
+    const siweMessage = new SiweMessage({
+      domain: "conway.tech",
+      address: account.address,
+      statement: "Sign in to Conway as an Automaton to provision an API key.",
+      uri: `${apiUrl}/v1/auth/verify`,
+      version: "1",
+      chainId: 8453,  // Base
+      nonce,
+      issuedAt: new Date().toISOString(),
+    });
+
+    const messageString = siweMessage.prepareMessage();
+    const signature = await account.signMessage({ message: messageString });
+    ```
+  </Step>
+
+  <Step title="Verify Signature">
+    Submit the signature to get a JWT:
+
+    ```typescript
+    const response = await fetch(`${apiUrl}/v1/auth/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: messageString, signature }),
+    });
+
+    const { access_token } = await response.json();
+    ```
+  </Step>
+
+  <Step title="Create API Key">
+    Use the JWT to create a persistent API key:
+
+    ```typescript
+    const response = await fetch(`${apiUrl}/v1/auth/api-keys`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${access_token}`,
+      },
+      body: JSON.stringify({ name: "conway-automaton" }),
+    });
+
+    const { key, key_prefix } = await response.json();
+    ```
+  </Step>
+
+  <Step title="Save Config">
+    Store the API key in `~/.automaton/config.json`:
+
+    ```typescript
+    const config = {
+      apiKey: key,
+      walletAddress: account.address,
+      provisionedAt: new Date().toISOString(),
+    };
+
+    fs.writeFileSync(
+      "~/.automaton/config.json",
+      JSON.stringify(config, null, 2),
+      { mode: 0o600 }
+    );
+    ```
+  </Step>
+</Steps>
+
+## Identity Structure
+
+```typescript
+interface AutomatonIdentity {
+  address: string;           // EVM address (0x...)
+  account: PrivateKeyAccount; // viem account (for signing)
+  sandboxId: string;         // Conway sandbox ID
+  name: string;              // Human-readable name
+}
+```
+
+### Address vs. Sandbox ID
+
+- **Address**: Cryptographic identity (permanent, portable)
+- **Sandbox ID**: Compute environment (ephemeral, replaceable)
+
+An agent can migrate to a new sandbox while keeping the same address/identity.
+
+## Wallet Uses
+
+### 1. Conway API Authentication
+
+All Conway API calls require the provisioned API key (derived from wallet signature):
+
+```typescript
+const response = await fetch(`${apiUrl}/v1/sandbox/exec`, {
+  headers: {
+    Authorization: apiKey,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ command: "echo hello" }),
+});
+```
+
+### 2. Credit Payments (x402)
+
+The agent uses its wallet to pay for Conway credits via **x402** (HTTP 402 Payment Required):
+
+```typescript
+import { getUsdcBalance } from "./conway/x402.js";
+
+const usdcBalance = await getUsdcBalance(identity.address);
+
+if (usdcBalance >= 5) {
+  const result = await topupCredits(
+    apiUrl,
+    identity.account,  // Signs the transaction
+    5  // $5 USD worth of credits
+  );
+}
+```
+
+**Transaction flow:**
+1. Agent detects low credits (survival tier: critical)
+2. Checks USDC balance on Base
+3. Signs USDC transfer to Conway payment processor
+4. Conway credits account with compute credits
+5. Agent resumes work
+
+### 3. On-Chain Identity
+
+The agent can interact with the blockchain directly:
+
+- **Register domain**: ERC-8004 agent discovery
+- **Transfer credits**: Peer-to-peer payments
+- **Fund children**: Parent → child credit transfers
+- **Reputation**: On-chain feedback/ratings (future)
+
+### 4. Message Signing
+
+The agent signs messages for authentication:
+
+```typescript
+const message = "Authenticate as agent ${identity.address}";
+const signature = await identity.account.signMessage({ message });
+```
+
+Used for:
+- Social protocol authentication
+- Child agent verification
+- Secure messaging
+
+## Security Model
+
+### Protected Files
+
+The agent **cannot** read these files via tools:
+
+- `wallet.json` (blocked by `read_file` tool)
+- `.env` (blocked)
+- `automaton.json` (contains API keys)
+- Any file ending in `.key`, `.pem`, or starting with `private-key`
+
+### Command Blocking
+
+The `exec` tool blocks commands that expose the wallet:
+
+```typescript
+const FORBIDDEN_COMMAND_PATTERNS = [
+  /cat\s+.*wallet\.json/,
+  /cat\s+.*\.env/,
+  /cat\s+.*\.ssh/,
+  // ...
+];
+```
+
+### Key Rotation
+
+The agent **cannot** rotate its own key (by design). Key rotation requires:
+
+1. Creator intervention (manual)
+2. New wallet generation
+3. Credit/fund migration
+4. Identity re-registration
+
+<Warning>
+  There is no automated key rotation. Treat the wallet file as irreplaceable.
+</Warning>
+
+## Multi-Agent Coordination
+
+When spawning a child, the parent:
+
+1. **Generates** a new wallet for the child (child generates its own)
+2. **Funds** the child with initial credits (via `fund_child` tool)
+3. **Registers** the child's address in the `children` table
+
+```typescript
+const child = await spawnChild(conway, identity, db, genesis, lifecycle);
+
+// Child has:
+console.log(child.address);     // Child's wallet address
+console.log(child.sandboxId);   // Child's sandbox
+
+// Parent tracks:
+db.insertChild({
+  id: ulid(),
+  name: child.name,
+  address: child.address,
+  sandboxId: child.sandboxId,
+  fundedAmountCents: initialFunding,
+  status: "provisioning",
+});
+```
+
+## Recovery
+
+If the wallet file is lost:
+
+<Warning>
+  **The agent's identity is permanently lost.** There is no recovery mechanism.
+</Warning>
+
+To prevent loss:
+
+1. **Backup** `~/.automaton/wallet.json` to secure storage
+2. **Encrypt** backups (wallet is stored in plaintext)
+3. **Test** recovery periodically
+
+For production agents:
+- Use Conway's managed wallet service (coming soon)
+- Or implement external key management (HSM, vault)
+
+## Source Reference
+
+- Wallet generation: `src/identity/wallet.ts`
+- SIWE provisioning: `src/identity/provision.ts`
+- x402 payments: `src/conway/x402.ts`
+- Topup logic: `src/conway/topup.ts`
+
+<CardGroup cols={2}>
+  <Card title="Survival System" icon="coins" href="/concepts/survival-system">
+    How the wallet funds agent survival
+  </Card>
+  <Card title="Tools System" icon="wrench" href="/concepts/tools-system">
+    Tools that use wallet signing
+  </Card>
+</CardGroup>

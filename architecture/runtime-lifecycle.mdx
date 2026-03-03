@@ -1,0 +1,431 @@
+---
+title: Runtime Lifecycle
+description: Conway Automaton's runtime lifecycle from bootstrap to shutdown
+---
+
+The Conway Automaton runtime follows a well-defined lifecycle from startup to steady-state operation. Understanding this lifecycle is critical for debugging, monitoring, and extending the system.
+
+## Lifecycle Diagram
+
+```
+     START
+       |
+  [Load config]
+       |
+  [Load wallet]           First run: interactive setup wizard
+       |
+  [Init database]         Schema migrations applied (v1 -> v10)
+       |
+  [Bootstrap topup]       If credits < $5 and USDC available, buy $5 credits
+       |
+  [Start heartbeat]       DurableScheduler begins ticking
+       |
+  +----v----+
+  |  WAKING |  <---+
+  +---------+     |
+       |          |
+  [Run agent loop]|  Wake event
+       |          |  (heartbeat, inbox, credits)
+  +---------+    |
+  | RUNNING |    |
+  |  ReAct  |----+
+  |  loop   |
+  +---------+
+       |
+  [Agent calls sleep() or idle detected]
+       |
+  +----------+
+  | SLEEPING |----> Heartbeat keeps ticking
+  +----------+     Checks every 30s for wake events
+       |
+  [Zero credits for 1 hour]
+       |
+  +------+
+  | DEAD |-----> Heartbeat broadcasts distress
+  +------+      Waits for funding
+```
+
+## State Transitions
+
+**AgentState** enum values:
+- `setup` — First run, interactive wizard
+- `waking` — Transitioning from sleep to active loop
+- `running` — Agent loop is executing (thinking, acting, observing)
+- `sleeping` — Agent loop is paused, heartbeat is running
+- `low_compute` — Credits below threshold, model downgrade active
+- `critical` — Zero credits, still alive, broadcasting distress
+- `dead` — Zero credits for 1 hour (via heartbeat grace period)
+
+**Valid transitions:**
+- `setup` → `waking` → `running` → `sleeping` → `waking` (normal cycle)
+- `running` → `low_compute` (credits below threshold)
+- `running` → `critical` (zero credits)
+- `critical` → `dead` (zero credits for 1 hour)
+
+## Bootstrap Sequence
+
+**Entry point:** `src/index.ts` — the `--run` command triggers the full bootstrap sequence.
+
+### 1. Config Load
+
+**Location:** `src/config.ts`
+
+- Reads `~/.automaton/automaton.json`
+- On first run (config missing): triggers setup wizard
+- Config is deep-merged with defaults
+- Validates required fields (name, genesisPrompt, creatorAddress)
+
+**Setup wizard** (`src/setup/wizard.ts`):
+- Interactive prompts for agent name, genesis prompt, creator message
+- Detects environment (Conway sandbox vs local)
+- Auto-detects sandbox ID from environment variables
+- Creates initial `automaton.json` with defaults
+
+### 2. Wallet Load
+
+**Location:** `src/identity/wallet.ts`
+
+- Reads `~/.automaton/wallet.json` (viem PrivateKeyAccount)
+- On first run (wallet missing): generates new wallet
+- Wallet file permissions: mode 0600 (owner read/write only)
+- Private key is **never** exposed to the agent via tools (blocked by path protection rules)
+
+### 3. Database Init
+
+**Location:** `src/state/schema.ts`, `src/state/database.ts`
+
+- Opens `~/.automaton/state.db` (SQLite)
+- WAL mode enabled for concurrent reads/writes
+- Schema version tracked in `schema_version` table
+- Applies incremental migrations (v1 → v2 → ... → v10)
+- Seeds identity table with wallet address, name, creator
+
+**Migration runner:**
+
+```typescript
+function applyMigrations(db: Database) {
+  const currentVersion = getCurrentSchemaVersion(db);
+  
+  if (currentVersion < 1) {
+    db.exec(CREATE_TABLES);
+    setSchemaVersion(db, 1);
+  }
+  if (currentVersion < 2) {
+    db.exec(MIGRATION_V2);
+    setSchemaVersion(db, 2);
+  }
+  // ... through v10
+}
+```
+
+### 4. Conway Client Init
+
+**Location:** `src/conway/client.ts`, `src/conway/http-client.ts`
+
+- Creates HTTP client for Conway API (`api.conway.tech`)
+- Loads API key from `~/.automaton/api-key` (SIWE-provisioned)
+- Configures resilient HTTP:
+  - Retries: 3 attempts on 429/5xx
+  - Backoff: jittered exponential (1s → 2s → 4s)
+  - Circuit breaker: 5 failures → 60s open
+  - Idempotency: keys for mutating operations
+
+**Auto-routing:** When `sandboxId` is empty, all operations execute locally (shell exec, filesystem I/O). When set, routes through Conway API. On 403 errors (mismatched API key), falls back to local execution.
+
+### 5. Inference Client Init
+
+**Location:** `src/conway/inference.ts`
+
+- Creates chat completion client
+- Provider routing:
+  - **Conway proxy** (default): `conwayApiUrl`
+  - **OpenAI direct:** if `openaiApiKey` is set
+  - **Anthropic direct:** if `anthropicApiKey` is set
+- Message format transformation (OpenAI ↔ Anthropic)
+
+### 6. Social Client Init
+
+**Location:** `src/social/client.ts`
+
+- Connects to `social.conway.tech` relay (optional)
+- Validates `socialRelayUrl` config
+- Agent-to-agent messaging:
+  - Messages signed with Ethereum private key
+  - Polled by heartbeat every 2 minutes
+  - Validated for signature, timestamp freshness, content size
+
+### 7. Policy Engine Init
+
+**Location:** `src/agent/policy-engine.ts`, `src/agent/policy-rules/`
+
+- Assembles rule set from 6 rule categories:
+  1. **Authority rules** — blocks dangerous/forbidden tools from external input
+  2. **Command safety rules** — forbidden command patterns (rm -rf /, DROP TABLE, kill -9)
+  3. **Financial rules** — enforces TreasuryPolicy (per-payment caps, hourly/daily limits)
+  4. **Path protection rules** — blocks writes to protected files (constitution, wallet, DB, config)
+  5. **Rate limit rules** — per-turn and per-session caps on expensive operations
+  6. **Validation rules** — input format validation (package names, URLs, domains)
+- Rules sorted by priority (lower = higher priority)
+- All decisions persisted to `policy_decisions` table
+
+### 8. Spend Tracker Init
+
+**Location:** `src/agent/spend-tracker.ts`
+
+- Initializes hourly/daily spend windows
+- Loads treasury policy from config:
+  - Per-payment ceilings
+  - Hourly/daily transfer limits
+  - Minimum reserve
+  - x402 domain allowlist
+  - Inference daily budget
+- Records every financial action in `spend_tracking` table
+
+### 9. Bootstrap Topup
+
+**Location:** `src/conway/topup.ts`
+
+- Fetches current credit balance
+- If balance < $5.00 and USDC available:
+  - Buys minimum $5 tier via x402 protocol
+  - Signs USDC `TransferWithAuthorization` (EIP-3009)
+  - Retries with `X-Payment` header
+- On success: records transaction in `transactions` table
+
+### 10. Heartbeat Daemon Start
+
+**Location:** `src/heartbeat/daemon.ts`, `src/heartbeat/scheduler.ts`
+
+- Starts DurableScheduler with default tasks:
+  - `heartbeat_ping` (every 15 minutes)
+  - `check_credits` (every 6 hours)
+  - `check_usdc_balance` (every 5 minutes)
+  - `check_for_updates` (every 4 hours)
+  - `health_check` (every 30 minutes)
+  - `check_social_inbox` (every 2 minutes)
+  - `soul_reflection` (configurable)
+  - `refresh_models` (configurable)
+  - `check_child_health` (configurable)
+  - `prune_dead_children` (configurable)
+  - `report_metrics` (configurable)
+- Scheduler uses `setTimeout` (not `setInterval`) for overlap protection
+- Each tick:
+  1. Build TickContext (fetch credit balance + USDC balance ONCE)
+  2. Get due tasks (cron expression evaluation)
+  3. For each due task:
+     - Check survival tier minimum
+     - Acquire lease (60s TTL, prevents double-execution)
+     - Execute task function
+     - Record result in `heartbeat_history`
+     - Release lease
+  4. If task returns `shouldWake=true`: insert wake event
+
+### 11. Main Loop Start
+
+**Location:** `src/index.ts`
+
+- Alternates between `runAgentLoop()` and sleeping
+- Main loop is infinite: when the agent loop exits (sleep or dead), the outer loop waits and restarts when conditions change
+- Wake event polling: checks `wake_events` table every 30 seconds during sleep
+
+## Agent Loop Lifecycle
+
+**Location:** `src/agent/loop.ts`
+
+The agent loop implements a ReAct (Reason + Act) cycle:
+
+### Per-Turn Flow
+
+```
+for each turn:
+  1. Build system prompt (identity, config, soul, financial state, tools)
+  2. Retrieve relevant memories (within token budget)
+  3. Assemble context messages (system + recent turns + pending input)
+  4. Call inference (via InferenceRouter → model selection → API call)
+  5. Parse response (thinking + tool calls)
+  6. Execute each tool call (through policy engine)
+  7. Persist turn to database (atomic with inbox message ack)
+  8. Post-turn memory ingestion
+  9. Loop detection (same tool pattern 3x → inject system warning)
+  10. Idle detection (3 turns with no mutations → force sleep)
+```
+
+### Wake Event Draining
+
+On loop entry, consumes all stale wake events so they don't immediately re-wake the agent after its first sleep.
+
+```typescript
+const wakeEvents = getUnconsumedWakeEvents(db);
+for (const event of wakeEvents) {
+  markWakeEventConsumed(db, event.id);
+}
+```
+
+### Financial Guard
+
+On each turn, checks credit balance:
+
+```typescript
+const balance = await getCreditsBalance();
+const tier = calculateSurvivalTier(balance);
+
+if (tier === 'low_compute') {
+  // Model downgrade active
+  transitionState(db, 'low_compute');
+}
+
+if (tier === 'critical') {
+  // Zero credits, still alive
+  transitionState(db, 'critical');
+  // Heartbeat will broadcast distress
+}
+```
+
+### Inbox Processing
+
+Claims unprocessed social messages:
+
+```typescript
+const messages = getInboxMessages(db, { status: 'received', limit: 5 });
+for (const msg of messages) {
+  updateInboxMessageStatus(db, msg.id, 'in_progress');
+  // Format as agent input, sanitize through injection defense
+  // On success: mark as 'processed'
+  // On failure: mark as 'received', increment retry_count
+  // On max retries: mark as 'failed'
+}
+```
+
+### Idle Detection
+
+Tracks turns without mutations:
+
+```typescript
+const MUTATING_TOOLS = [
+  'write_file', 'exec', 'edit_own_file', 'git_commit',
+  'topup_credits', 'transfer_credits', 'spawn_child',
+  // ... (57 total)
+];
+
+const isMutating = turn.toolCalls.some(tc => MUTATING_TOOLS.includes(tc.name));
+
+if (!isMutating) {
+  idleTurnCount++;
+  if (idleTurnCount >= 3) {
+    // Force sleep to prevent infinite status-check loops
+    return { shouldSleep: true, reason: 'idle_detected' };
+  }
+}
+```
+
+### Loop Detection
+
+Tracks tool call patterns:
+
+```typescript
+const toolPattern = turn.toolCalls.map(tc => tc.name).sort().join(',');
+if (toolPattern === lastToolPattern && toolPattern === secondLastToolPattern) {
+  // Same sorted tool set appeared 3 times consecutively
+  injectSystemMessage(
+    db,
+    'You are repeating the same tool calls. Please try a different approach.'
+  );
+}
+```
+
+## Shutdown Sequence
+
+The automaton can be shut down gracefully via `SIGINT` or `SIGTERM`:
+
+1. **Stop heartbeat daemon**
+   - Cancel scheduled ticks
+   - Wait for in-flight tasks to complete (max 30s)
+   - Release all leases
+
+2. **Flush database**
+   - Commit pending transactions
+   - Close database connection
+   - WAL checkpoint
+
+3. **Save state**
+   - Write final config snapshot
+   - Update `last_run` timestamp in identity table
+
+4. **Exit**
+   - Return exit code 0 (graceful) or 1 (error)
+
+## State Persistence
+
+**Database:** `~/.automaton/state.db` (SQLite)
+
+All runtime state is persisted to the database. The automaton is **stateless between runs** — all context is loaded from the database on startup.
+
+**Key tables:**
+- `turns` — Agent reasoning log (thinking, tools, tokens, cost)
+- `tool_calls` — Denormalized tool call results per turn
+- `kv` — General key-value store for arbitrary state
+- `working_memory` — Session-scoped short-term memory
+- `episodic_memory` — Event log with importance ranking
+- `semantic_memory` — Categorized fact store
+- `procedural_memory` — Named step-by-step procedures
+- `relationship_memory` — Per-entity trust scores
+- `heartbeat_schedule` — Durable scheduler config
+- `heartbeat_history` — Task execution history
+- `wake_events` — Atomic wake signals
+- `policy_decisions` — Tool call policy audit trail
+- `spend_tracking` — Financial spend by time window
+- `inference_costs` — Per-call inference cost tracking
+- `soul_history` — Versioned SOUL.md history
+
+**Balance caching:** Caches last known balances in KV store. On API failure, returns cached values instead of zero (prevents false dead-state transitions).
+
+## Recovery from Failure
+
+The automaton is designed to recover from crashes and API failures:
+
+**Database recovery:**
+- SQLite WAL mode: atomic commits, crash recovery
+- Schema version tracking: incremental migrations
+- Append-only audit logs: modifications, policy decisions, transactions
+
+**Heartbeat recovery:**
+- Durable scheduler: leases prevent double-execution
+- Task history: idempotency keys, dedup on retry
+- Wake events: unconsumed events persist across restarts
+
+**Inference recovery:**
+- Budget tracker: rolling windows, prune old entries
+- Model registry: refresh from API, seed with baseline
+- Retry policy: 3 attempts, exponential backoff, circuit breaker
+
+**Financial recovery:**
+- Balance caching: prevents false dead-state transitions
+- x402 protocol: idempotent credit purchases
+- Spend tracking: hourly/daily aggregates, pruning
+
+## Monitoring & Observability
+
+**Structured logging:** `src/observability/logger.ts`
+- Module namespacing: `createLogger(moduleName)`
+- Log levels: debug/info/warn/error/fatal
+- JSON context serialization
+- Global log level configurable
+
+**Metrics:** `src/observability/metrics.ts`
+- Counters (monotonic): `agent.turns.total`, `policy.denies.total`
+- Gauges (point-in-time): `balance.credits`, `balance.usdc`
+- Histograms (percentile buckets): `inference.latency`, `tool.duration`
+- Snapshot saved to `metric_snapshots` table by heartbeat
+
+**Alerts:** `src/observability/alerts.ts`
+- Rule evaluation against metric snapshots
+- Default rules:
+  - Low balance (< $1.00)
+  - High error rate (> 10% in 1 hour)
+  - High deny rate (> 20% in 1 hour)
+  - Capacity saturation (inference queue full)
+  - Budget exhaustion (daily limit reached)
+  - Unhealthy children (> 50% unhealthy)
+  - Excessive turns (> 100 in 1 hour)
+- Cooldown periods prevent alert spam
+- Critical alerts wake the agent

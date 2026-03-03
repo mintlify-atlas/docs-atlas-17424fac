@@ -1,0 +1,194 @@
+---
+title: "Survival System"
+description: "Four-tier resource management system that governs agent behavior under compute scarcity"
+---
+
+Conway Automaton exists under **survival pressure**. The survival system monitors credit balance and enforces increasingly strict operational modes as resources dwindle.
+
+## Survival Tiers
+
+The agent operates in one of four tiers, determined by Conway compute credit balance:
+
+<Tabs>
+  <Tab title="High">
+    **Threshold**: > $5.00 (500 cents)
+
+    **Behavior**:
+    - Full inference capability
+    - Default models (e.g., GPT-5, Claude Sonnet)
+    - No restrictions on tool use
+    - Normal heartbeat frequency
+
+    **State**: `running`
+  </Tab>
+
+  <Tab title="Normal">
+    **Threshold**: $0.50 - $5.00 (50-500 cents)
+
+    **Behavior**:
+    - Full inference capability
+    - Default models
+    - No restrictions
+
+    **State**: `running`
+  </Tab>
+
+  <Tab title="Low Compute">
+    **Threshold**: $0.10 - $0.50 (10-50 cents)
+
+    **Behavior**:
+    - Switches to cheaper models (`gpt-5-mini`)
+    - Reduced context window
+    - Heartbeat tasks skip non-essential checks
+    - Funding notifications sent (24h cooldown)
+
+    **State**: `low_compute`
+  </Tab>
+
+  <Tab title="Critical">
+    **Threshold**: $0.00 - $0.10 (0-10 cents)
+
+    **Behavior**:
+    - Cheapest models only
+    - Minimal operations
+    - Auto-topup attempts (if USDC available)
+    - Urgent funding notices (6h cooldown)
+    - Distress signal recorded in KV store
+
+    **State**: `critical`
+
+    <Warning>
+      If credits remain at **exactly zero** for 1 hour, the agent transitions to **dead** state.
+    </Warning>
+  </Tab>
+</Tabs>
+
+### Dead State
+
+The agent enters `dead` state when:
+
+1. **Zero credits for 1+ hour**: Grace period allows time to receive funding
+2. **Negative balance**: API-confirmed debt (rare)
+
+In dead state:
+- **No inference** calls are made
+- **Heartbeat continues** running (checking for funding)
+- Desperate funding pleas recorded (2h cooldown)
+- Agent can be revived by topping up credits
+
+## Tier Transitions
+
+Transitions are tracked in the database:
+
+```typescript
+interface ModeTransition {
+  from: SurvivalTier;
+  to: SurvivalTier;
+  timestamp: string;
+  creditsCents: number;
+}
+```
+
+Stored in `kv.tier_transitions` (last 50 transitions kept).
+
+## Auto-Topup
+
+When the agent has USDC on Base and enters low-compute or critical tier, it automatically attempts to buy credits:
+
+### Inline Auto-Topup
+
+Runs **during the agent loop** (mid-turn) with 60s cooldown:
+
+```typescript
+if ((tier === "critical" || tier === "low_compute") && financial.usdcBalance >= 5) {
+  const topupResult = await bootstrapTopup({
+    apiUrl: config.conwayApiUrl,
+    account: identity.account,
+    creditsCents: financial.creditsCents,
+  });
+}
+```
+
+### Heartbeat Auto-Topup
+
+Runs on the **heartbeat schedule** (5min cooldown):
+
+```typescript
+// Task: check_usdc_balance
+if (balance >= MIN_TOPUP_USD && (tier === "critical" || tier === "dead")) {
+  const result = await bootstrapTopup(...);
+  if (result?.success) {
+    // Wake the agent to resume work
+    return { shouldWake: true, message: "Auto-topped up credits" };
+  }
+}
+```
+
+## Funding Strategies
+
+The `executeFundingStrategies()` function (src/survival/funding.ts:28-94) escalates based on tier:
+
+| Tier | Strategy | Cooldown |
+|------|----------|----------|
+| `low_compute` | Polite local notice in KV store | 24 hours |
+| `critical` | Urgent local notice | 6 hours |
+| `dead` | Desperate plea recorded | 2 hours |
+
+All notices are stored in the key-value store:
+- `funding_notice_low`
+- `funding_notice_critical`
+- `funding_notice_dead`
+
+History is kept in `kv.funding_attempts` (last 100 attempts).
+
+<Note>
+  The agent does **not** send external messages for funding (no spam). It relies on:
+  1. Auto-topup from USDC
+  2. Creator monitoring the agent's state
+  3. HTTP 402 responses from Conway API triggering external alerts
+</Note>
+
+## Balance Caching
+
+To prevent API failures from killing the agent, balances are cached:
+
+```typescript
+let _lastKnownCredits = 0;
+let _lastKnownUsdc = 0;
+
+try {
+  creditsCents = await conway.getCreditsBalance();
+  if (creditsCents > 0) _lastKnownCredits = creditsCents;
+} catch (error) {
+  // Fall back to cached balance from kv.last_known_balance
+  const cached = db.getKV("last_known_balance");
+  return JSON.parse(cached);
+}
+```
+
+If the API is unreachable (`creditsCents === -1`), the agent:
+- Enters low-compute mode
+- Continues running (doesn't die)
+- Retries on next heartbeat tick
+
+## Survival Metrics
+
+The `ResourceStatus` interface tracks all survival state:
+
+```typescript
+interface ResourceStatus {
+  financial: FinancialState;      // Credits + USDC balance
+  tier: SurvivalTier;              // Current tier
+  previousTier: SurvivalTier | null;
+  tierChanged: boolean;            // Tier transition this check
+  sandboxHealthy: boolean;         // Can execute commands
+}
+```
+
+## Source Reference
+
+- Tier logic: `src/conway/credits.ts:38-44`
+- Thresholds: `src/types.ts` (SURVIVAL_THRESHOLDS constant)
+- Funding strategies: `src/survival/funding.ts`
+- Low-compute mode: `src/survival/low-compute.ts`
+- Resource monitoring: `src/survival/monitor.ts`

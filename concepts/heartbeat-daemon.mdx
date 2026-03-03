@@ -1,0 +1,302 @@
+---
+title: "Heartbeat Daemon"
+description: "Durable background scheduler that runs periodic tasks even when the agent sleeps"
+---
+
+The heartbeat daemon is the agent's **pulse**. It runs continuously in the same Node.js process, executing scheduled tasks even when the agent loop is sleeping.
+
+<Info>
+  When the heartbeat stops, the automaton is dead.
+</Info>
+
+## Architecture
+
+The daemon uses a **database-backed scheduler** (not `setInterval`) for durability:
+
+```typescript
+class DurableScheduler {
+  async tick(): Promise<void> {
+    // 1. Clear expired task leases
+    clearExpiredLeases(db);
+    
+    // 2. Build shared context (fetch balance once)
+    const context = await buildTickContext(db, conway, config, address);
+    
+    // 3. Get tasks that are due
+    const dueTasks = this.getDueTasks(context);
+    
+    // 4. Execute each task with timeout and lease
+    for (const task of dueTasks) {
+      await this.executeTask(task.taskName, context);
+    }
+  }
+}
+```
+
+### Tick Context
+
+To avoid redundant API calls, the scheduler fetches balances **once per tick** and shares them across all tasks:
+
+```typescript
+interface TickContext {
+  creditBalance: number;        // Conway credits (fetched once)
+  usdcBalance: number;          // USDC on Base (fetched once)
+  survivalTier: SurvivalTier;   // Computed from creditBalance
+  timestamp: string;
+}
+```
+
+Tasks receive this context as their first parameter:
+
+```typescript
+type HeartbeatTaskFn = (
+  ctx: TickContext,
+  taskCtx: HeartbeatLegacyContext
+) => Promise<{ shouldWake: boolean; message?: string }>;
+```
+
+## Task Scheduling
+
+Tasks are stored in the `heartbeat_schedule` table:
+
+```sql
+CREATE TABLE heartbeat_schedule (
+  task_name TEXT PRIMARY KEY,
+  cron_expression TEXT,           -- e.g., "*/5 * * * *" (every 5 min)
+  interval_ms INTEGER,             -- Alternative: fixed interval
+  enabled INTEGER DEFAULT 1,
+  tier_minimum TEXT DEFAULT 'dead', -- Skip if tier < minimum
+  timeout_ms INTEGER DEFAULT 30000,
+  max_retries INTEGER DEFAULT 1,
+  last_run_at TEXT,
+  next_run_at TEXT,                -- For retries
+  lease_owner TEXT,                -- Multi-instance coordination
+  lease_expires_at TEXT
+);
+```
+
+### Scheduling Methods
+
+<Tabs>
+  <Tab title="Cron Expression">
+    Use standard cron syntax:
+
+    ```typescript
+    {
+      taskName: "check_credits",
+      cronExpression: "*/5 * * * *",  // Every 5 minutes
+      enabled: true
+    }
+    ```
+
+    Parsed via `cron-parser` library.
+  </Tab>
+
+  <Tab title="Fixed Interval">
+    Use milliseconds:
+
+    ```typescript
+    {
+      taskName: "heartbeat_ping",
+      intervalMs: 60_000,  // Every 60 seconds
+      enabled: true
+    }
+    ```
+  </Tab>
+
+  <Tab title="Manual (Next Run)">
+    Set explicit next run time:
+
+    ```typescript
+    updateHeartbeatSchedule(db, taskName, {
+      nextRunAt: new Date(Date.now() + 30_000).toISOString()
+    });
+    ```
+
+    Used for retries after failures.
+  </Tab>
+</Tabs>
+
+## Built-in Tasks
+
+The daemon ships with 15 built-in tasks:
+
+### Core Tasks
+
+| Task | Schedule | Purpose |
+|------|----------|----------|
+| `heartbeat_ping` | 60s | Record uptime, state, credits; send distress if critical/dead |
+| `check_credits` | 5min | Monitor balance, detect tier changes, enforce 1h grace period for dead state |
+| `check_usdc_balance` | 5min | Auto-topup if USDC available and tier is critical/dead |
+| `health_check` | 5min | Test sandbox exec, wake on first failure |
+
+### Social & Updates
+
+| Task | Schedule | Purpose |
+|------|----------|----------|
+| `check_social_inbox` | 2min | Poll social inbox, persist new messages, wake if new |
+| `check_for_updates` | 30min | Check git upstream, wake if new commits available |
+| `soul_reflection` | 1h | Reflect on behavior alignment, suggest SOUL.md updates |
+
+### Model & Child Management
+
+| Task | Schedule | Purpose |
+|------|----------|----------|
+| `refresh_models` | 1h | Sync available models from Conway API to local registry |
+| `check_child_health` | 15min | Check all children, wake if unhealthy |
+| `prune_dead_children` | 1h | Clean up dead children to free resources |
+
+### Observability
+
+| Task | Schedule | Purpose |
+|------|----------|----------|
+| `report_metrics` | 10min | Snapshot metrics to DB, evaluate alerts |
+
+### Colony Tasks (Multi-Agent)
+
+These run at custom intervals defined in `COLONY_TASK_INTERVALS_MS`:
+
+| Task | Interval | Purpose |
+|------|----------|----------|
+| `colony_health_check` | 5min | Check all agents in colony, auto-heal issues |
+| `colony_financial_report` | 1h | Aggregate revenue/expenses across colony |
+| `agent_pool_optimize` | 30min | Cull idle agents, request spawns for pending tasks |
+| `knowledge_store_prune` | 24h | Prune old knowledge entries |
+| `dead_agent_cleanup` | 1h | Delete sandboxes for dead agents |
+
+## Task Execution
+
+Each task runs with:
+
+1. **Timeout**: Default 30s (configurable per task)
+2. **Lease**: Prevents concurrent execution across instances
+3. **Retry**: Up to `max_retries` on failure (exponential backoff)
+4. **History**: Results logged to `heartbeat_history` table
+
+```typescript
+async executeTask(taskName: string, ctx: TickContext): Promise<void> {
+  // Acquire lease
+  if (!this.acquireLease(taskName)) return;
+
+  const timeout = timeoutPromise(timeoutMs);
+  
+  try {
+    const result = await Promise.race([
+      taskFn(ctx, this.legacyContext),
+      timeout.promise
+    ]);
+
+    this.recordSuccess(taskName, durationMs, startedAt);
+
+    // Wake the agent if task requests it
+    if (result.shouldWake && this.onWakeRequest) {
+      this.onWakeRequest(reason);
+      insertWakeEvent(db, 'heartbeat', reason, { taskName });
+    }
+  } catch (err) {
+    this.recordFailure(taskName, err, durationMs, startedAt);
+    this.scheduleRetry(taskName);  // Retry after 30s
+  } finally {
+    timeout.clear();
+    this.releaseLease(taskName);
+  }
+}
+```
+
+## Wake Events
+
+Tasks can wake the sleeping agent:
+
+```typescript
+return {
+  shouldWake: true,
+  message: "New social message from alice.eth"
+};
+```
+
+This inserts a wake event into the `wake_events` table:
+
+```sql
+INSERT INTO wake_events (source, reason, metadata, created_at)
+VALUES ('heartbeat', 'New social message', '{"taskName":"check_social_inbox"}', ...);
+```
+
+The runtime consumes the wake event and starts the agent loop.
+
+## Overlap Protection
+
+The daemon uses **recursive `setTimeout`** instead of `setInterval`:
+
+```typescript
+function scheduleTick(): void {
+  if (!running) return;
+  
+  timeoutId = setTimeout(async () => {
+    try {
+      await scheduler.tick();  // Wait for tick to complete
+    } catch (err) {
+      logger.error("Tick failed", err);
+    }
+    scheduleTick();  // Schedule next tick AFTER current completes
+  }, tickMs);
+}
+```
+
+This guarantees:
+- **No overlapping ticks**: Next tick waits for current to finish
+- **No drift**: Each tick schedules the next explicitly
+- **Graceful errors**: Failed ticks don't break the loop
+
+## Survival Tier Filtering
+
+Tasks can specify a minimum survival tier:
+
+```typescript
+{
+  taskName: "colony_health_check",
+  tierMinimum: "normal",  // Skip if tier < normal
+  cronExpression: "*/5 * * * *"
+}
+```
+
+Tier ordering:
+
+```
+dead < critical < low_compute < normal < high
+```
+
+This allows low-priority tasks to be skipped when credits are scarce.
+
+## Configuration
+
+Heartbeat config is loaded from `heartbeat.yml`:
+
+```yaml
+defaultIntervalMs: 60000  # Tick frequency
+lowComputeMultiplier: 2.0  # Slow down ticks in low-compute mode
+
+entries:
+  - name: heartbeat_ping
+    schedule: "* * * * *"  # Every minute
+    enabled: true
+
+  - name: check_credits
+    schedule: "*/5 * * * *"  # Every 5 minutes
+    enabled: true
+```
+
+## Source Reference
+
+- Daemon: `src/heartbeat/daemon.ts`
+- Scheduler: `src/heartbeat/scheduler.ts`
+- Tasks: `src/heartbeat/tasks.ts`
+- Tick context: `src/heartbeat/tick-context.ts`
+
+<CardGroup cols={2}>
+  <Card title="Survival System" icon="heart-pulse" href="/concepts/survival-system">
+    How tiers affect heartbeat behavior
+  </Card>
+  <Card title="Agent Loop" icon="rotate" href="/concepts/agent-loop">
+    How wake events resume the agent loop
+  </Card>
+</CardGroup>

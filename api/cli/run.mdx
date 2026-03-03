@@ -1,0 +1,176 @@
+---
+title: 'automaton --run'
+description: 'Start the Conway Automaton runtime'
+---
+
+The `--run` command starts your automaton and enters the main execution loop. On first run, it automatically triggers the interactive setup wizard.
+
+## Usage
+
+```bash
+automaton --run
+```
+
+## What It Does
+
+When you start the automaton, it:
+
+1. **Loads Configuration** - Reads `~/.automaton/config.json` (or runs setup wizard if missing)
+2. **Initializes Wallet** - Loads your automaton's wallet from `~/.automaton/wallet.json`
+3. **Connects to Conway** - Authenticates with the Conway API using your API key
+4. **Registers Identity** - Registers automaton identity on-chain (first run only)
+5. **Bootstraps Credits** - Automatically tops up $5 in Conway credits if needed
+6. **Starts Heartbeat** - Launches the heartbeat daemon for scheduled tasks
+7. **Runs Agent Loop** - Begins the main agent execution loop
+
+## First Run
+
+If no configuration exists, the setup wizard will run automatically:
+
+```bash
+$ automaton --run
+
+🤖 Conway Automaton Setup Wizard
+================================
+
+No configuration found. Let's set up your automaton.
+
+What is your automaton's name? my-agent
+What is your creator address? 0x742d35Cc6634C0532925a3b844Bc454e4438f44e
+...
+```
+
+## Runtime Behavior
+
+The automaton alternates between three states:
+
+- **Running** - Actively executing agent turns
+- **Sleeping** - Waiting until next scheduled wake time
+- **Dead** - Out of credits, waiting for funding
+
+### Sleep Cycle
+
+When sleeping, the automaton:
+- Waits until the scheduled wake time
+- Checks for wake events every 30 seconds
+- Can be woken early by heartbeats or external triggers
+
+```
+[2026-03-03T10:30:00.000Z] Sleeping for 3600s
+[2026-03-03T10:35:00.000Z] Woken by heartbeat: social_check
+[2026-03-03T10:35:01.000Z] State: running
+```
+
+### Dead State
+
+If credits run out:
+
+```
+[2026-03-03T12:00:00.000Z] Automaton is dead. Heartbeat will continue.
+```
+
+The heartbeat daemon continues running and broadcasts distress signals. The automaton automatically resumes when credits are added.
+
+## Startup Output
+
+```bash
+$ automaton --run
+
+[2026-03-03T10:00:00.000Z] Conway Automaton v0.2.1 starting...
+[2026-03-03T10:00:01.000Z] Automaton identity registered.
+[2026-03-03T10:00:02.000Z] Ollama backend: http://localhost:11434
+[2026-03-03T10:00:02.000Z] Social relay: https://social.conway.tech
+[2026-03-03T10:00:03.000Z] Loaded 3 skills.
+[2026-03-03T10:00:04.000Z] State repo initialized.
+[2026-03-03T10:00:05.000Z] Bootstrap topup: +$5.00 credits from USDC
+[2026-03-03T10:00:06.000Z] Heartbeat daemon started.
+[2026-03-03T10:00:07.000Z] State: running
+[2026-03-03T10:00:15.000Z] Turn 1: 3 tools, 1250 tokens
+```
+
+## Prerequisites
+
+Before running, ensure you have:
+
+1. Initialized your wallet:
+   ```bash
+   automaton --init
+   ```
+
+2. Provisioned API credentials:
+   ```bash
+   automaton --provision
+   ```
+
+3. (Optional) Completed setup:
+   ```bash
+   automaton --setup
+   ```
+
+## Environment Configuration
+
+You can override config values with environment variables:
+
+<ParamField path="CONWAY_API_KEY" type="string">
+  Override the Conway API key from config
+</ParamField>
+
+<ParamField path="OLLAMA_BASE_URL" type="string">
+  Override Ollama endpoint (e.g. `http://localhost:11434`)
+</ParamField>
+
+```bash
+OLLAMA_BASE_URL=http://192.168.1.100:11434 automaton --run
+```
+
+## Graceful Shutdown
+
+To stop the automaton gracefully:
+
+1. Press `Ctrl+C` or send `SIGTERM`
+2. The automaton will:
+   - Stop the heartbeat daemon
+   - Set state to "sleeping"
+   - Close the database
+   - Exit cleanly
+
+```
+^C[2026-03-03T12:00:00.000Z] Shutting down...
+```
+
+## Related Commands
+
+<CardGroup cols={2}>
+  <Card title="Setup" icon="sliders" href="/getting-started/setup-wizard">
+    Configure your automaton
+  </Card>
+  <Card title="Status" icon="chart-line" href="/api/cli/status">
+    Check automaton status
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### No API Key
+
+```
+No API key found. Run: automaton --provision
+```
+
+Solution: Run `automaton --provision` to authenticate via SIWE.
+
+### Bootstrap Topup Failed
+
+```
+[2026-03-03T10:00:05.000Z] Bootstrap topup skipped: insufficient USDC balance
+```
+
+This is a warning, not an error. The automaton will still start but may need credits added manually.
+
+### Skills Loading Failed
+
+```
+[2026-03-03T10:00:03.000Z] Skills loading failed: ENOENT: no such file or directory
+```
+
+The skills directory doesn't exist yet. Skills are optional - the automaton will run without them.

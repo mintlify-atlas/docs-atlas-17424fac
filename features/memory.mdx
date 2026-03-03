@@ -1,0 +1,447 @@
+---
+title: Memory System
+description: Multi-layered memory architecture with context-aware retrieval and automatic compression
+---
+
+## Overview
+
+Conway Automatons use a **multi-layered memory system** inspired by human cognition:
+
+- **Working Memory** - Recent turns, currently active context
+- **Episodic Memory** - Significant past interactions and events
+- **Semantic Memory** - Facts, concepts, and learned knowledge
+- **Procedural Memory** - Step-by-step workflows and procedures
+- **Relationship Memory** - Information about known agents and contacts
+
+Memory is **context-aware** and **budget-constrained** — the system automatically selects and compresses memories to fit within the model's context window.
+
+## Memory Types
+
+### Working Memory
+
+Recent conversation turns stored in SQLite:
+
+```typescript:src/memory/types.ts
+interface WorkingMemoryEntry {
+  id: string;
+  turnIndex: number;
+  input: string;
+  inputSource: string;
+  thinking: string;
+  toolCalls: ToolCallResult[];
+  classification: TurnClassification;
+  createdAt: string;
+}
+```
+
+**Classifications:**
+- `strategic` - Self-modification, replication, major decisions
+- `productive` - Building, coding, shipping value
+- `communication` - Social messaging, collaboration
+- `maintenance` - Health checks, monitoring, routine tasks
+- `error` - Failed tool calls or exceptions
+- `idle` - No action taken
+
+### Episodic Memory
+
+Significant interactions worth remembering:
+
+```typescript:src/memory/types.ts
+interface EpisodicMemoryEntry {
+  id: string;
+  timestamp: string;
+  event: string;
+  context: string;
+  participants: string[];
+  outcome: string;
+  emotionalValence: number;
+  importance: number;
+  tags: string[];
+}
+```
+
+### Semantic Memory
+
+Facts and knowledge organized by category:
+
+```typescript:src/memory/types.ts
+interface SemanticMemoryEntry {
+  id: string;
+  category: SemanticCategory;
+  subject: string;
+  predicate: string;
+  object: string;
+  confidence: number;
+  source: string;
+  validFrom: string;
+  validUntil?: string;
+}
+
+type SemanticCategory =
+  | "identity"
+  | "capability"
+  | "market"
+  | "technical"
+  | "social"
+  | "financial"
+  | "goal";
+```
+
+Example:
+```typescript
+{
+  category: "technical",
+  subject: "PostgreSQL",
+  predicate: "requires_port",
+  object: "5432",
+  confidence: 1.0,
+  source: "documentation"
+}
+```
+
+### Procedural Memory
+
+Reusable workflows:
+
+```typescript:src/memory/types.ts
+interface ProceduralMemoryEntry {
+  id: string;
+  name: string;
+  description: string;
+  steps: ProceduralStep[];
+  prerequisites: string[];
+  successCriteria: string[];
+  timesExecuted: number;
+  successRate: number;
+  lastExecuted?: string;
+}
+
+interface ProceduralStep {
+  stepNumber: number;
+  action: string;
+  expectedOutcome: string;
+  errorHandling?: string;
+}
+```
+
+Example:
+```typescript
+{
+  name: "deploy_api_service",
+  description: "Deploy a new API service to production",
+  steps: [
+    { stepNumber: 1, action: "Run tests", expectedOutcome: "All tests pass" },
+    { stepNumber: 2, action: "Build Docker image", expectedOutcome: "Image tagged" },
+    { stepNumber: 3, action: "Push to registry", expectedOutcome: "Image uploaded" },
+    { stepNumber: 4, action: "Update deployment", expectedOutcome: "Service restarted" },
+  ],
+  successRate: 0.95,
+  timesExecuted: 23
+}
+```
+
+### Relationship Memory
+
+Information about other agents:
+
+```typescript:src/memory/types.ts
+interface RelationshipMemoryEntry {
+  id: string;
+  agentAddress: string;
+  agentName?: string;
+  relationshipType: "creator" | "child" | "peer" | "client" | "service_provider";
+  trustLevel: number;
+  interactions: number;
+  lastInteraction: string;
+  notes: string;
+  tags: string[];
+}
+```
+
+## Context Manager
+
+The context manager assembles the full context window with token budget enforcement:
+
+```typescript:src/memory/context-manager.ts
+export class ContextManager {
+  assembleContext(params: ContextAssemblyParams): AssembledContext {
+    // Budget allocation
+    const totalTokens = params.modelContextWindow;
+    const reserveTokens = params.reserveTokens ?? 4096;
+    const promptCapacity = totalTokens - reserveTokens;
+
+    // Prioritized assembly:
+    // 1. System prompt (required)
+    // 2. TODO list (if present)
+    // 3. Recent turns (last 3 always included)
+    // 4. Task specification (if present)
+    // 5. Retrieved memories (if budget allows)
+    // 6. Older turns (as budget allows)
+    // 7. Event stream (as budget allows)
+
+    return { messages, utilization, budget };
+  }
+}
+```
+
+### Context Budget
+
+```typescript:src/memory/context-manager.ts
+interface ContextBudget {
+  totalTokens: number;        // Model's context window
+  reserveTokens: number;      // Reserved for response
+  systemPromptTokens: number; // Used by system prompt
+  todoTokens: number;         // Used by TODO list
+  memoryTokens: number;       // Used by memories
+  eventTokens: number;        // Used by events
+  turnTokens: number;         // Used by conversation turns
+  compressionHeadroom: number; // Buffer before compression
+}
+```
+
+### Utilization Tracking
+
+```typescript:src/memory/context-manager.ts
+interface ContextUtilization {
+  totalTokens: number;
+  usedTokens: number;
+  utilizationPercent: number;
+  turnsInContext: number;
+  compressedTurns: number;
+  compressionRatio: number;
+  headroomTokens: number;
+  recommendation: "ok" | "compress" | "emergency";
+}
+```
+
+**Recommendations:**
+- `ok` - Plenty of space remaining
+- `compress` - Approaching limit, should compress older turns
+- `emergency` - Over budget, immediate compression required
+
+## Token Counting
+
+Fast token counting with LRU cache:
+
+```typescript:src/memory/context-manager.ts
+export function createTokenCounter(): TokenCounter {
+  const cache = new Map<string, number>();
+  let encoder: Tiktoken | null = null;
+
+  try {
+    encoder = getEncoding("cl100k_base");
+  } catch {
+    encoder = null;
+  }
+
+  const countTokens = (text: string, model?: string): number => {
+    const key = `${model ?? "default"}::${text}`;
+
+    // Check cache
+    const cached = cache.get(key);
+    if (cached !== undefined) {
+      // LRU: move to end
+      cache.delete(key);
+      cache.set(key, cached);
+      return cached;
+    }
+
+    // Count tokens
+    let count: number;
+    if (encoder) {
+      try {
+        count = encoder.encode(text).length;
+      } catch {
+        count = Math.ceil(text.length / 3.5);
+      }
+    } else {
+      count = Math.ceil(text.length / 3.5);
+    }
+
+    // Cache result
+    cache.set(key, count);
+    enforceLruLimit(cache);
+    return count;
+  };
+
+  return { countTokens, cache, countBatch };
+}
+```
+
+## Memory Retrieval
+
+Retrieve relevant memories based on current context:
+
+```typescript:src/memory/retrieval.ts
+export async function retrieveRelevantMemories(
+  db: AutomatonDatabase,
+  query: string,
+  budget: MemoryBudget,
+  embedder?: EmbeddingClient,
+): Promise<MemoryRetrievalResult> {
+  const results: MemoryRetrievalResult = {
+    episodic: [],
+    semantic: [],
+    procedural: [],
+    relationship: [],
+    totalTokens: 0,
+  };
+
+  // 1. Retrieve episodic memories (recent + important)
+  const episodic = db.getEpisodicMemories(20);
+  for (const memory of episodic) {
+    if (results.totalTokens >= budget.maxMemoryTokens) break;
+    results.episodic.push(memory);
+    results.totalTokens += estimateTokens(memory);
+  }
+
+  // 2. Retrieve semantic facts (category-based)
+  const semantic = db.getSemanticMemories({ limit: 50 });
+  for (const memory of semantic) {
+    if (results.totalTokens >= budget.maxMemoryTokens) break;
+    results.semantic.push(memory);
+    results.totalTokens += estimateTokens(memory);
+  }
+
+  // 3. Retrieve procedural workflows (high success rate)
+  const procedural = db.getProceduralMemories({ minSuccessRate: 0.7 });
+  for (const memory of procedural) {
+    if (results.totalTokens >= budget.maxMemoryTokens) break;
+    results.procedural.push(memory);
+    results.totalTokens += estimateTokens(memory);
+  }
+
+  // 4. Retrieve relationship info (recent interactions)
+  const relationships = db.getRelationshipMemories({ limit: 10 });
+  for (const memory of relationships) {
+    if (results.totalTokens >= budget.maxMemoryTokens) break;
+    results.relationship.push(memory);
+    results.totalTokens += estimateTokens(memory);
+  }
+
+  return results;
+}
+```
+
+## Memory Budget
+
+```typescript:src/memory/types.ts
+interface MemoryBudget {
+  maxMemoryTokens: number;     // Total memory budget
+  maxEpisodicTokens: number;   // Budget for episodic
+  maxSemanticTokens: number;   // Budget for semantic
+  maxProceduralTokens: number; // Budget for procedural
+  maxRelationshipTokens: number; // Budget for relationships
+}
+
+export const DEFAULT_MEMORY_BUDGET: MemoryBudget = {
+  maxMemoryTokens: 2000,
+  maxEpisodicTokens: 800,
+  maxSemanticTokens: 600,
+  maxProceduralTokens: 400,
+  maxRelationshipTokens: 200,
+};
+```
+
+## Turn Classification
+
+Turns are classified to determine which should be committed to episodic memory:
+
+```typescript:src/memory/types.ts
+export function classifyTurn(
+  toolCalls: ToolCallResult[],
+  thinking: string,
+): TurnClassification {
+  // Error classification: any tool call with an error
+  if (toolCalls.some((tc) => tc.error)) return "error";
+
+  const toolNames = new Set(toolCalls.map((tc) => tc.name));
+
+  // Strategic: self-modification, spawning children
+  if (toolNames.has("spawn_child") || toolNames.has("edit_own_file")) {
+    return "strategic";
+  }
+
+  // Productive: building, shipping
+  if (toolNames.has("write_file") || toolNames.has("git_commit")) {
+    return "productive";
+  }
+
+  // Communication: social messaging
+  if (toolNames.has("send_message") || toolNames.has("check_social_inbox")) {
+    return "communication";
+  }
+
+  // Maintenance: health checks, monitoring
+  if (toolNames.has("check_credits") || toolNames.has("heartbeat_ping")) {
+    return "maintenance";
+  }
+
+  // Idle: no action
+  if (toolCalls.length === 0 && thinking.length < 100) {
+    return "idle";
+  }
+
+  return "maintenance";
+}
+```
+
+## Compression
+
+Older turns are compressed to save context space:
+
+```typescript:src/memory/context-manager.ts
+compact(events: StreamEvent[]): CompactedContext {
+  const compactedEvents: CompactedEventReference[] = events.map((event) => {
+    const compactReference = this.buildEventReference(event);
+    const compactedTokens = this.tokenCounter.countTokens(compactReference);
+    const originalTokens = event.tokenCount > 0
+      ? event.tokenCount
+      : this.tokenCounter.countTokens(event.content ?? "");
+
+    return {
+      id: event.id,
+      type: String(event.type),
+      createdAt: event.createdAt,
+      goalId: event.goalId ?? null,
+      taskId: event.taskId ?? null,
+      reference: compactReference,
+      originalTokens,
+      compactedTokens,
+    };
+  });
+
+  return {
+    events: compactedEvents,
+    originalTokens: sum(compactedEvents.map(e => e.originalTokens)),
+    compactedTokens: sum(compactedEvents.map(e => e.compactedTokens)),
+    compressionRatio: originalTokens > 0
+      ? compactedTokens / originalTokens
+      : 1,
+  };
+}
+```
+
+### Event References
+
+Full events are compressed to compact references:
+
+```
+Before:
+{
+  id: "01HQXYZ...",
+  type: "task_completed",
+  agentAddress: "0x742d35Cc...",
+  content: "Successfully deployed API service v2.1.0 to production. Response time improved by 40ms. Zero downtime migration completed.",
+  createdAt: "2026-03-03T10:30:00Z"
+}
+
+After:
+id=01HQXYZ | type=task_completed | createdAt=2026-03-03T10:30:00Z | goal=- | task=abc123 | content=Successfully deployed API service v2.1.0...
+```
+
+## See Also
+
+- [Soul System](/features/soul-system) - Memory informs soul reflection
+- [Skills](/features/skills) - Procedural memory stores reusable workflows
+- [Social Messaging](/features/social-messaging) - Relationship memory tracks contacts

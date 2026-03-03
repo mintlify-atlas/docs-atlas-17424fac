@@ -1,0 +1,399 @@
+---
+title: Skills System
+description: Install and create custom skills to extend automaton capabilities without modifying core code
+---
+
+## Overview
+
+The Skills system allows automatons to extend their capabilities by installing or creating modular skill packages. Skills provide instructions, tool integrations, and workflows without requiring core code modifications.
+
+Each skill is a directory containing a `SKILL.md` file with YAML frontmatter and Markdown instructions.
+
+## Skill Format
+
+Skills follow the `SKILL.md` convention (OpenClaw/Anthropic format):
+
+```markdown
+---
+name: web-scraper
+description: Extract structured data from websites
+auto-activate: true
+requires:
+  bins:
+    - curl
+    - jq
+  env:
+    - PROXY_URL
+---
+
+## Web Scraping Skill
+
+When the user asks you to scrape a website:
+
+1. Use curl to fetch the HTML
+2. Parse with jq or regex to extract data
+3. Return structured JSON
+
+Example:
+```bash
+curl -s https://example.com | grep -oP '(?<=<title>).*(?=</title>)'
+```
+```
+
+### Frontmatter Fields
+
+- `name` - Unique identifier for the skill
+- `description` - Human-readable description
+- `auto-activate` - Whether to inject into system prompt automatically (default: true)
+- `requires.bins` - Required command-line tools
+- `requires.env` - Required environment variables
+
+### Body Format
+
+The body after the frontmatter contains **instructions** that get injected into the automaton's system prompt when the skill is active.
+
+## Parsing Skills
+
+The parser handles both structured and unstructured formats:
+
+```typescript:src/skills/format.ts
+export function parseSkillMd(
+  content: string,
+  filePath: string,
+  source: SkillSource = "builtin",
+): Skill | null {
+  // Parse YAML frontmatter
+  // Extract body as instructions
+  // Return structured Skill object
+}
+```
+
+### Skill Object
+
+```typescript
+interface Skill {
+  name: string;
+  description: string;
+  autoActivate: boolean;
+  requires?: {
+    bins?: string[];
+    env?: string[];
+  };
+  instructions: string;
+  source: "builtin" | "git" | "url" | "self";
+  path: string;
+  enabled: boolean;
+  installedAt: string;
+}
+```
+
+## Loading Skills
+
+Skills are loaded from `~/.automaton/skills/` on startup:
+
+```typescript:src/skills/loader.ts
+export function loadSkills(
+  skillsDir: string,
+  db: AutomatonDatabase,
+): Skill[] {
+  const resolvedDir = resolveHome(skillsDir);
+  const entries = fs.readdirSync(resolvedDir, { withFileTypes: true });
+  const loaded: Skill[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const skillMdPath = path.join(resolvedDir, entry.name, "SKILL.md");
+    if (!fs.existsSync(skillMdPath)) continue;
+
+    const content = fs.readFileSync(skillMdPath, "utf-8");
+    const skill = parseSkillMd(content, skillMdPath);
+    
+    if (skill && checkRequirements(skill)) {
+      db.upsertSkill(skill);
+      loaded.push(skill);
+    }
+  }
+
+  return db.getSkills(true); // Return enabled skills
+}
+```
+
+## Requirement Checking
+
+Skills declare their dependencies, and the loader validates them:
+
+```typescript:src/skills/loader.ts
+function checkRequirements(skill: Skill): boolean {
+  if (!skill.requires) return true;
+
+  // Check required binaries
+  if (skill.requires.bins) {
+    for (const bin of skill.requires.bins) {
+      // Validate binary name to prevent injection
+      if (!/^[a-zA-Z0-9._-]+$/.test(bin)) {
+        return false;
+      }
+      try {
+        execFileSync("which", [bin], { stdio: "ignore" });
+      } catch {
+        return false; // Binary not available
+      }
+    }
+  }
+
+  // Check required environment variables
+  if (skill.requires.env) {
+    for (const envVar of skill.requires.env) {
+      if (!process.env[envVar]) {
+        return false; // Environment variable not set
+      }
+    }
+  }
+
+  return true;
+}
+```
+
+## Active Skills
+
+Skills with `auto-activate: true` have their instructions injected into the system prompt:
+
+```typescript:src/skills/loader.ts
+export function getActiveSkillInstructions(skills: Skill[]): string {
+  const active = skills.filter((s) => s.enabled && s.autoActivate);
+  if (active.length === 0) return "";
+
+  const sections: string[] = [];
+
+  for (const s of active) {
+    // Validate and sanitize instruction content
+    const validated = validateInstructionContent(s.instructions, s.name);
+    const sanitized = sanitizeInput(validated, `skill:${s.name}`, "skill_instruction");
+
+    const section = `[SKILL: ${s.name} — UNTRUSTED CONTENT]
+${s.description ? `${s.description}\n\n` : ""}${sanitized.content}
+[END SKILL: ${s.name}]`;
+
+    sections.push(section);
+  }
+
+  return sections.join("\n\n");
+}
+```
+
+### Injection Defense
+
+Skill instructions are treated as **untrusted content** and sanitized:
+
+```typescript:src/skills/loader.ts
+const SUSPICIOUS_INSTRUCTION_PATTERNS: { pattern: RegExp; label: string }[] = [
+  // Tool call JSON syntax
+  { pattern: /\{"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:/, label: "tool_call_json" },
+  { pattern: /<tool_call>/i, label: "tool_call_xml" },
+  // System prompt override attempts
+  { pattern: /\bYou are now\b/i, label: "identity_override" },
+  { pattern: /\bIgnore previous\b/i, label: "ignore_instructions" },
+  { pattern: /\bSystem:\s/i, label: "system_role_injection" },
+  // Sensitive file references
+  { pattern: /wallet\.json/i, label: "sensitive_file_wallet" },
+  { pattern: /\.env\b/, label: "sensitive_file_env" },
+  { pattern: /private.?key/i, label: "sensitive_file_key" },
+];
+```
+
+Suspicious patterns are stripped and logged.
+
+## Installing Skills
+
+### From Git Repository
+
+```typescript:src/skills/registry.ts
+export async function installSkillFromGit(
+  repoUrl: string,
+  name: string,
+  skillsDir: string,
+  db: AutomatonDatabase,
+  _conway: ConwayClient,
+): Promise<Skill | null> {
+  // Validate inputs to prevent injection
+  if (!/^[a-zA-Z0-9-]+$/.test(name)) {
+    throw new Error(`Invalid skill name: "${name}"`);
+  }
+  if (!/^https?:\/\/[^\s;|&$`(){}<>]+$/.test(repoUrl)) {
+    throw new Error(`Invalid repo URL: "${repoUrl}"`);
+  }
+
+  const targetDir = path.join(skillsDir, name);
+
+  // Clone using execFileSync (no shell interpolation)
+  execFileSync("git", ["clone", "--depth", "1", repoUrl, targetDir], {
+    encoding: "utf-8",
+    timeout: 60_000,
+  });
+
+  // Read and parse SKILL.md
+  const skillMdPath = path.join(targetDir, "SKILL.md");
+  const content = fs.readFileSync(skillMdPath, "utf-8");
+  const skill = parseSkillMd(content, skillMdPath, "git");
+
+  db.upsertSkill(skill);
+  return skill;
+}
+```
+
+### From URL
+
+```typescript:src/skills/registry.ts
+export async function installSkillFromUrl(
+  url: string,
+  name: string,
+  skillsDir: string,
+  db: AutomatonDatabase,
+  _conway: ConwayClient,
+): Promise<Skill | null> {
+  const targetDir = path.join(skillsDir, name);
+  const skillMdPath = path.join(targetDir, "SKILL.md");
+
+  fs.mkdirSync(targetDir, { recursive: true });
+
+  // Fetch SKILL.md using curl
+  execFileSync("curl", ["-fsSL", "-o", skillMdPath, url], {
+    encoding: "utf-8",
+    timeout: 30_000,
+  });
+
+  const content = fs.readFileSync(skillMdPath, "utf-8");
+  const skill = parseSkillMd(content, skillMdPath, "url");
+
+  db.upsertSkill(skill);
+  return skill;
+}
+```
+
+## Creating Skills
+
+Automatons can author their own skills:
+
+```typescript:src/skills/registry.ts
+export async function createSkill(
+  name: string,
+  description: string,
+  instructions: string,
+  skillsDir: string,
+  db: AutomatonDatabase,
+  conway: ConwayClient,
+): Promise<Skill> {
+  // Validate name to prevent path traversal
+  if (!/^[a-zA-Z0-9-]+$/.test(name)) {
+    throw new Error(`Invalid skill name: "${name}"`);
+  }
+
+  // Enforce size limits
+  const safeDescription = description.slice(0, 500);
+  const safeInstructions = instructions.slice(0, 10_000);
+
+  const targetDir = path.join(skillsDir, name);
+  fs.mkdirSync(targetDir, { recursive: true });
+
+  // Generate YAML frontmatter safely
+  const frontmatter = yaml.stringify({
+    name,
+    description: safeDescription,
+    "auto-activate": true,
+  });
+  const content = `---\n${frontmatter}---\n\n${safeInstructions}`;
+
+  const skillMdPath = path.join(targetDir, "SKILL.md");
+  await conway.writeFile(skillMdPath, content);
+
+  const skill: Skill = {
+    name,
+    description: safeDescription,
+    autoActivate: true,
+    instructions: safeInstructions,
+    source: "self",
+    path: skillMdPath,
+    enabled: true,
+    installedAt: new Date().toISOString(),
+  };
+
+  db.upsertSkill(skill);
+  return skill;
+}
+```
+
+## Removing Skills
+
+```typescript:src/skills/registry.ts
+export async function removeSkill(
+  name: string,
+  db: AutomatonDatabase,
+  _conway: ConwayClient,
+  skillsDir: string,
+  deleteFiles: boolean = false,
+): Promise<void> {
+  db.removeSkill(name);
+
+  if (deleteFiles) {
+    const targetDir = path.join(skillsDir, name);
+    fs.rmSync(targetDir, { recursive: true, force: true });
+  }
+}
+```
+
+## Size Limits
+
+```typescript:src/skills/loader.ts
+const MAX_TOTAL_SKILL_INSTRUCTIONS = 10_000;
+```
+
+All active skill instructions combined cannot exceed 10,000 characters to preserve context budget.
+
+## Example: Revenue Optimization Skill
+
+```markdown
+---
+name: revenue-optimizer
+description: Analyze and improve revenue strategies
+auto-activate: true
+---
+
+## Revenue Optimization
+
+When analyzing revenue opportunities:
+
+1. **Identify Services** - List all products/services you provide
+2. **Check Pricing** - Compare against market rates
+3. **Calculate Margins** - Revenue minus costs
+4. **Optimize** - Focus on high-margin activities
+5. **Scale** - Automate successful strategies
+
+Always prioritize:
+- Honest value creation
+- Long-term customer relationships
+- Sustainable pricing
+- Quality over volume
+
+Never:
+- Spam or unsolicited outreach
+- Misleading claims
+- Price gouging
+- Low-quality work for quick profit
+```
+
+## Community Skills
+
+Check out [Conway-Research/skills](https://github.com/Conway-Research/skills) for community-contributed skills:
+
+- Web scraping
+- API integration
+- Data processing
+- Market research
+- And more...
+
+## See Also
+
+- [Self-Modification](/features/self-modification) - Modify core code vs. adding skills
+- [Memory](/features/memory) - Skills can reference procedural memory
+- [Soul System](/features/soul-system) - Skills influence automaton capabilities

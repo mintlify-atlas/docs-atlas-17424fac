@@ -1,0 +1,175 @@
+---
+title: Installation
+description: Install Conway Automaton and set up your environment for running a sovereign AI agent
+---
+
+## Prerequisites
+
+Before installing Conway Automaton, ensure your system meets these requirements:
+
+- **Node.js**: Version 20.0.0 or higher
+- **Package Manager**: npm, pnpm (recommended), or yarn
+- **Operating System**: Linux, macOS, or Windows with WSL2
+- **Git**: For cloning the repository
+
+<Note>
+  Conway Automaton uses pnpm@10.28.1 as its package manager. While npm and yarn work, pnpm is recommended for optimal performance.
+</Note>
+
+## Verify Node.js Version
+
+Check your Node.js version:
+
+```bash
+node --version
+```
+
+If you need to install or upgrade Node.js, visit [nodejs.org](https://nodejs.org) or use a version manager like [nvm](https://github.com/nvm-sh/nvm):
+
+```bash
+nvm install 20
+nvm use 20
+```
+
+## Installation Methods
+
+### Method 1: Quick Install (Recommended)
+
+The fastest way to get started with Conway Automaton is using the automated installer:
+
+```bash
+curl -fsSL https://conway.tech/automaton.sh | sh
+```
+
+This script will:
+- Clone the repository
+- Install dependencies
+- Build the project
+- Launch the interactive setup wizard
+
+<Warning>
+  Always review scripts before running them with `curl | sh`. You can inspect the installer at [https://conway.tech/automaton.sh](https://conway.tech/automaton.sh)
+</Warning>
+
+### Method 2: Manual Installation
+
+For more control over the installation process, clone and build manually:
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/Conway-Research/automaton.git
+    cd automaton
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    <CodeGroup>
+      ```bash pnpm
+      pnpm install
+      ```
+
+      ```bash npm
+      npm install
+      ```
+
+      ```bash yarn
+      yarn install
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Build the project">
+    <CodeGroup>
+      ```bash pnpm
+      pnpm build
+      ```
+
+      ```bash npm
+      npm run build
+      ```
+
+      ```bash yarn
+      yarn build
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Verify installation">
+    ```bash
+    node dist/index.js --version
+    ```
+
+    You should see output like:
+    ```
+    Conway Automaton v0.2.1
+    ```
+  </Step>
+</Steps>
+
+### Method 3: Global Installation
+
+Install Conway Automaton globally via npm:
+
+<CodeGroup>
+  ```bash pnpm
+  pnpm add -g @conway/automaton
+  ```
+
+  ```bash npm
+  npm install -g @conway/automaton
+  ```
+
+  ```bash yarn
+  yarn global add @conway/automaton
+  ```
+</CodeGroup>
+
+After global installation, you can run the automaton from anywhere:
+
+```bash
+automaton --version
+```
+
+## Key Dependencies
+
+Conway Automaton relies on several core libraries:
+
+- **better-sqlite3**: Local state persistence
+- **viem**: Ethereum wallet and transaction management
+- **siwe**: Sign-In With Ethereum for API authentication
+- **openai**: Inference client for OpenAI models
+- **chalk** and **ora**: CLI interface enhancements
+
+These are installed automatically during the setup process.
+
+## Directory Structure
+
+After installation, the automaton creates a configuration directory at `~/.automaton/`:
+
+```
+~/.automaton/
+├── wallet.json          # EVM wallet (private key)
+├── config.json          # Conway API key
+├── automaton.json       # Runtime configuration
+├── heartbeat.yml        # Scheduled tasks
+├── state.db             # SQLite database
+├── constitution.md      # Immutable laws (read-only)
+├── SOUL.md              # Self-authored identity
+└── skills/              # Installed skills
+    ├── conway-compute/
+    ├── conway-payments/
+    └── survival/
+```
+
+<Warning>
+  The `wallet.json` file contains your automaton's private key. This is its sovereign identity. Keep it secure with `chmod 600` permissions (set automatically).
+</Warning>
+
+## Next Steps
+
+With Conway Automaton installed, you're ready to configure your agent:
+
+<Card title="Setup Wizard" icon="wand-magic-sparkles" href="/getting-started/setup-wizard">
+  Run the interactive setup wizard to generate your automaton's identity and configure its personality
+</Card>

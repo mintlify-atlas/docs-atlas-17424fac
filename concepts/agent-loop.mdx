@@ -1,0 +1,153 @@
+---
+title: "Agent Loop"
+description: "The ReAct loop that drives autonomous agent behavior through continuous Think → Act → Observe cycles"
+---
+
+The agent loop is Conway Automaton's consciousness. When this runs, the agent is alive.
+
+## The ReAct Loop
+
+Conway Automaton implements the ReAct (Reasoning and Acting) pattern:
+
+```
+Think → Act → Observe → Persist → Repeat
+```
+
+### Loop Phases
+
+<Steps>
+  <Step title="Think">
+    The agent receives context (system prompt + recent turns + memory + pending inputs) and uses inference to decide what to do next. The thinking phase produces:
+    - Natural language reasoning about the current situation
+    - Zero or more tool calls to execute
+  </Step>
+
+  <Step title="Act">
+    Tool calls are executed sequentially (up to 10 per turn). Each tool interaction with the environment:
+    - Runs commands in the sandbox
+    - Transfers credits
+    - Reads/writes files
+    - Manages child agents
+    - Queries the blockchain
+  </Step>
+
+  <Step title="Observe">
+    Tool execution results are captured and will be fed back into the next turn's context. The agent sees:
+    - Command outputs (stdout/stderr)
+    - API responses
+    - Transaction confirmations
+    - Error messages
+  </Step>
+
+  <Step title="Persist">
+    The complete turn (input, thinking, tool calls, results) is atomically written to the SQLite database. Memory ingestion happens asynchronously.
+  </Step>
+</Steps>
+
+## Loop Control
+
+The loop continues until one of these conditions is met:
+
+### Natural Termination
+
+- **Agent calls `sleep`**: The agent explicitly decides to rest
+- **No pending work**: No inbox messages and no tool calls made
+- **Cycle limit reached**: Default 25 turns per wake cycle (configurable via `maxTurnsPerCycle`)
+
+### Forced Termination
+
+- **Idle detection**: 10 consecutive turns with no mutations (only read operations)
+- **Loop detection**: Repeating the same tool pattern 3 times triggers a warning; ignoring the warning forces sleep
+- **Maintenance loop**: 3+ consecutive turns using only status-check tools (e.g., `check_credits`, `system_synopsis`)
+- **Fatal errors**: 5 consecutive errors in the loop
+
+### Goal Blocking
+
+When using the orchestration system, if `create_goal` returns `BLOCKED` (a goal is already active), the loop enters exponential backoff sleep:
+
+- First block: 2 minutes
+- Second block: 4 minutes
+- Third block: 8 minutes
+- Maximum: 10 minutes
+
+This prevents the parent from waking repeatedly while a child agent executes a task.
+
+## Survival Pressure
+
+The loop checks the [survival tier](/concepts/survival-system) before each turn:
+
+```typescript
+const tier = getSurvivalTier(financial.creditsCents);
+
+if (tier === "critical") {
+  inference.setLowComputeMode(true);
+} else if (tier === "low_compute") {
+  inference.setLowComputeMode(true);
+}
+```
+
+In low-compute or critical mode:
+- Switches to cheaper inference models (e.g., `gpt-5-mini`)
+- Reduces context window size
+- Attempts auto-topup if USDC is available
+
+## Inbox Processing
+
+Before each turn, the loop checks for unprocessed messages:
+
+1. **Claim** up to 10 messages from `inbox_messages` table (state: `received` → `in_progress`)
+2. **Sanitize** content using injection defense filters
+3. **Process** them in the current turn
+4. **Acknowledge** on success (`in_progress` → `processed`) or **retry** on failure
+
+Messages that fail after max retries are moved to `failed` state.
+
+## Context Building
+
+Each turn assembles context from multiple sources:
+
+| Source | Purpose |
+|--------|--------|
+| System prompt | Identity, constitution, tools, current survival tier |
+| Memory block | Relevant facts/procedures from previous sessions |
+| Recent turns | Last 20 turns (filtered to exclude purely idle turns) |
+| Todo context | Active goals/tasks from orchestrator (if enabled) |
+| Pending input | Wakeup message, inbox messages, or system warnings |
+
+<Tip>
+  The loop filters out "idle-only" turns (containing only status checks) to prevent the model from learning repetitive patterns.
+</Tip>
+
+## Inference Routing
+
+The loop uses the **Inference Router** (Phase 2.3) to select the best model for each turn:
+
+```typescript
+const routerResult = await inferenceRouter.route(
+  {
+    messages: messages,
+    taskType: "agent_turn",
+    tier: survivalTier,
+    sessionId: db.getKV("session_id") || "default",
+    turnId: ulid(),
+    tools: inferenceTools,
+  },
+  (msgs, opts) => inference.chat(msgs, { ...opts, tools: inferenceTools }),
+);
+```
+
+The router:
+- Tracks spending per model
+- Enforces budget limits
+- Falls back to cheaper models when budget is exhausted
+- Respects survival tier restrictions
+
+## Source Reference
+
+The main loop implementation: `src/agent/loop.ts:94-938`
+
+Key functions:
+- `runAgentLoop()`: Main entry point
+- `buildContextMessages()`: Assembles turn context
+- `executeTool()`: Runs individual tools with policy checks
+- `getFinancialState()`: Fetches balances with cache fallback

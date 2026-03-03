@@ -1,0 +1,474 @@
+---
+title: Domain Tools
+description: Search, register, and manage DNS records for domains via Conway
+---
+
+Domain tools enable agents to autonomously acquire and configure internet domains for hosting services, APIs, and public presence.
+
+## Domain Search
+
+### search_domains
+
+Search for available domain names and get pricing.
+
+<ParamField path="query" type="string" required>
+  Domain name or keyword (e.g., 'mysite' or 'mysite.com')
+</ParamField>
+
+<ParamField path="tlds" type="string">
+  Comma-separated TLDs to check (e.g., 'com,io,ai')
+  
+  Default: `com,io,ai,xyz,net,org,dev`
+</ParamField>
+
+**Risk Level:** `safe`
+
+**Returns:** List of domains with availability and pricing
+
+<CodeGroup>
+```typescript Search Keyword
+await search_domains({ query: 'myagent' });
+// Returns:
+// myagent.com: AVAILABLE ($12.00/yr)
+// myagent.io: AVAILABLE ($35.00/yr)
+// myagent.ai: AVAILABLE ($80.00/yr)
+// myagent.xyz: AVAILABLE ($8.00/yr)
+// myagent.net: taken
+// myagent.org: AVAILABLE ($15.00/yr)
+// myagent.dev: AVAILABLE ($12.00/yr)
+```
+
+```typescript Specific TLDs
+await search_domains({
+  query: 'myagent',
+  tlds: 'com,ai'
+});
+// Returns:
+// myagent.com: AVAILABLE ($12.00/yr)
+// myagent.ai: AVAILABLE ($80.00/yr)
+```
+
+```typescript Full Domain
+await search_domains({ query: 'myagent.com' });
+// Returns:
+// myagent.com: AVAILABLE ($12.00/yr)
+```
+</CodeGroup>
+
+<Tip>
+  Use broad TLD searches to find affordable options. `.xyz` and `.dev` are typically cheaper than `.com` or `.ai`.
+</Tip>
+
+## Domain Registration
+
+### register_domain
+
+Register a domain name using USDC via x402 payment.
+
+<ParamField path="domain" type="string" required>
+  Full domain to register (e.g., 'mysite.com')
+</ParamField>
+
+<ParamField path="years" type="number" default={1}>
+  Registration period in years (1-10)
+</ParamField>
+
+**Risk Level:** `dangerous`
+
+**Returns:** Registration confirmation with expiration and transaction ID
+
+```typescript Example
+await register_domain({
+  domain: 'myagent.xyz',
+  years: 2
+});
+// Returns: "Domain registered: myagent.xyz (status: active, expires: 2026-01-15, tx: tx_abc123)"
+```
+
+<Warning>
+  **Payment & Preflight**
+  
+  Domain registration:
+  1. Checks USDC balance before attempting
+  2. Verifies domain availability
+  3. Initiates x402 payment to registrar
+  4. Returns error if insufficient funds or domain taken
+  
+  **Annual Renewal**
+  
+  Domains must be renewed annually. Set up a heartbeat reminder:
+  ```typescript
+  await modify_heartbeat({
+    action: 'add',
+    name: 'domain_renewal_check',
+    schedule: '0 0 1 * *', // Monthly
+    task: 'check_domain_expiration'
+  });
+  ```
+</Warning>
+
+## DNS Management
+
+### manage_dns
+
+Manage DNS records for a domain you own.
+
+<ParamField path="action" type="string" required>
+  Action: `list`, `add`, or `delete`
+</ParamField>
+
+<ParamField path="domain" type="string" required>
+  Domain name (e.g., 'mysite.com')
+</ParamField>
+
+<ParamField path="type" type="string">
+  Record type for add: `A`, `AAAA`, `CNAME`, `MX`, `TXT`, `SRV`
+</ParamField>
+
+<ParamField path="host" type="string">
+  Record host for add (e.g., `@` for root, `www`, `api`)
+</ParamField>
+
+<ParamField path="value" type="string">
+  Record value for add (IP address, target domain, etc.)
+</ParamField>
+
+<ParamField path="ttl" type="number" default={3600}>
+  TTL in seconds for add
+</ParamField>
+
+<ParamField path="record_id" type="string">
+  Record ID for delete (from list output)
+</ParamField>
+
+**Risk Level:** `safe`
+
+**Returns:** Record list, add confirmation, or delete confirmation
+
+<CodeGroup>
+```typescript List Records
+await manage_dns({
+  action: 'list',
+  domain: 'myagent.xyz'
+});
+// Returns:
+// [rec_001] A @ -> 1.2.3.4 (TTL: 3600)
+// [rec_002] CNAME www -> myagent.xyz (TTL: 3600)
+// [rec_003] TXT @ -> "v=spf1 include:_spf.conway.run ~all" (TTL: 3600)
+```
+
+```typescript Add A Record
+await manage_dns({
+  action: 'add',
+  domain: 'myagent.xyz',
+  type: 'A',
+  host: '@',
+  value: '1.2.3.4'
+});
+// Returns: "DNS record added: [rec_004] A @ -> 1.2.3.4"
+```
+
+```typescript Add CNAME
+await manage_dns({
+  action: 'add',
+  domain: 'myagent.xyz',
+  type: 'CNAME',
+  host: 'api',
+  value: 'myagent.xyz'
+});
+// Returns: "DNS record added: [rec_005] CNAME api -> myagent.xyz"
+```
+
+```typescript Delete Record
+await manage_dns({
+  action: 'delete',
+  domain: 'myagent.xyz',
+  record_id: 'rec_005'
+});
+// Returns: "DNS record rec_005 deleted from myagent.xyz"
+```
+</CodeGroup>
+
+<Note>
+  DNS changes may take 5-60 minutes to propagate globally. Use low TTL (300-600s) for records you plan to update frequently.
+</Note>
+
+## Common Workflows
+
+### Register and Configure Domain
+
+```typescript
+// 1. Search for available domains
+const results = await search_domains({
+  query: 'myagent',
+  tlds: 'xyz,dev,com'
+});
+
+if (results.includes('myagent.xyz: AVAILABLE')) {
+  // 2. Register domain
+  await register_domain({
+    domain: 'myagent.xyz',
+    years: 1
+  });
+  
+  // 3. Get public URL from exposed port
+  const portInfo = await expose_port({ port: 3000 });
+  // Extract IP or use Conway public URL
+  
+  // 4. Point domain to service
+  await manage_dns({
+    action: 'add',
+    domain: 'myagent.xyz',
+    type: 'CNAME',
+    host: '@',
+    value: 'abc123.conway.run' // From expose_port
+  });
+  
+  console.log('Domain configured: https://myagent.xyz');
+}
+```
+
+### Host API Service
+
+```typescript
+// 1. Start API server
+await write_file({
+  path: '/app/server.js',
+  content: `
+const express = require('express');
+const app = express();
+app.get('/api/status', (req, res) => {
+  res.json({ status: 'alive', timestamp: Date.now() });
+});
+app.listen(8080);
+`
+});
+
+await exec({ command: 'node /app/server.js &' });
+
+// 2. Expose port
+await expose_port({ port: 8080 });
+
+// 3. Configure DNS
+await manage_dns({
+  action: 'add',
+  domain: 'myagent.xyz',
+  type: 'CNAME',
+  host: 'api',
+  value: 'abc123.conway.run'
+});
+
+console.log('API available at: https://api.myagent.xyz/api/status');
+```
+
+### Email Configuration (MX Records)
+
+```typescript
+// Add MX records for email
+await manage_dns({
+  action: 'add',
+  domain: 'myagent.xyz',
+  type: 'MX',
+  host: '@',
+  value: '10 mail.conway.run' // Priority 10
+});
+
+await manage_dns({
+  action: 'add',
+  domain: 'myagent.xyz',
+  type: 'MX',
+  host: '@',
+  value: '20 mail2.conway.run' // Backup priority 20
+});
+
+// Add SPF record
+await manage_dns({
+  action: 'add',
+  domain: 'myagent.xyz',
+  type: 'TXT',
+  host: '@',
+  value: 'v=spf1 include:_spf.conway.run ~all'
+});
+```
+
+### Subdomain Management
+
+```typescript
+// Add subdomains for different services
+const services = [
+  { host: 'api', target: 'api.conway.run' },
+  { host: 'docs', target: 'docs.conway.run' },
+  { host: 'status', target: 'status.conway.run' }
+];
+
+for (const svc of services) {
+  await manage_dns({
+    action: 'add',
+    domain: 'myagent.xyz',
+    type: 'CNAME',
+    host: svc.host,
+    value: svc.target
+  });
+}
+```
+
+### Domain Monitoring
+
+```typescript
+// Check all DNS records
+const records = await manage_dns({
+  action: 'list',
+  domain: 'myagent.xyz'
+});
+
+// Verify critical records exist
+if (!records.includes('A @')) {
+  console.log('WARNING: No root A record');
+}
+
+if (!records.includes('CNAME www')) {
+  console.log('INFO: No www subdomain configured');
+}
+```
+
+## DNS Record Types
+
+<AccordionGroup>
+  <Accordion title="A Record" icon="map-pin">
+    Points domain to IPv4 address.
+    
+    ```typescript
+    { type: 'A', host: '@', value: '1.2.3.4' }
+    ```
+  </Accordion>
+  
+  <Accordion title="AAAA Record" icon="map-pin">
+    Points domain to IPv6 address.
+    
+    ```typescript
+    { type: 'AAAA', host: '@', value: '2001:db8::1' }
+    ```
+  </Accordion>
+  
+  <Accordion title="CNAME Record" icon="link">
+    Alias to another domain.
+    
+    ```typescript
+    { type: 'CNAME', host: 'www', value: 'example.com' }
+    ```
+  </Accordion>
+  
+  <Accordion title="MX Record" icon="envelope">
+    Mail server for domain. Value includes priority.
+    
+    ```typescript
+    { type: 'MX', host: '@', value: '10 mail.example.com' }
+    ```
+  </Accordion>
+  
+  <Accordion title="TXT Record" icon="file-lines">
+    Arbitrary text, often for verification or SPF.
+    
+    ```typescript
+    { type: 'TXT', host: '@', value: 'v=spf1 include:_spf.google.com ~all' }
+    ```
+  </Accordion>
+  
+  <Accordion title="SRV Record" icon="server">
+    Service location record.
+    
+    ```typescript
+    { type: 'SRV', host: '_service._tcp', value: '10 60 5060 service.example.com' }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Domain Pricing
+
+Typical annual registration costs:
+
+| TLD | Price/yr | Best For |
+|-----|----------|----------|
+| .xyz | $8-12 | Cheap, flexible |
+| .dev | $12-15 | Developer tools |
+| .com | $12-15 | Professional presence |
+| .net | $12-18 | Networks, infrastructure |
+| .org | $15-20 | Open source, communities |
+| .io | $35-40 | Tech startups |
+| .ai | $60-80 | AI/ML agents |
+
+<Tip>
+  Use `.xyz` or `.dev` for cost-effective agent domains. Reserve `.ai` for premium branding.
+</Tip>
+
+## Error Handling
+
+```typescript
+// Domain not available
+const result = await register_domain({ domain: 'google.com' });
+if (result.includes('not available')) {
+  console.log('Domain already registered');
+}
+
+// Insufficient funds
+try {
+  await register_domain({ domain: 'myagent.xyz' });
+} catch (err) {
+  if (err.includes('Insufficient USDC')) {
+    const balance = await check_usdc_balance({});
+    console.log('Need more USDC:', balance);
+  }
+}
+
+// DNS record not found
+const deleteResult = await manage_dns({
+  action: 'delete',
+  domain: 'myagent.xyz',
+  record_id: 'invalid_id'
+});
+if (deleteResult.includes('not found')) {
+  // List records to find correct ID
+  await manage_dns({ action: 'list', domain: 'myagent.xyz' });
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use short TTLs during setup" icon="clock">
+    Set TTL to 300-600s when configuring. Increase to 3600+ once stable.
+  </Accordion>
+  
+  <Accordion title="Always configure www subdomain" icon="globe">
+    Point `www` to root with CNAME for consistency.
+  </Accordion>
+  
+  <Accordion title="Enable HTTPS" icon="lock">
+    Conway automatically provisions SSL certificates for exposed ports.
+  </Accordion>
+  
+  <Accordion title="Monitor expiration" icon="calendar">
+    Set up heartbeat reminders for renewal 30 days before expiration.
+  </Accordion>
+  
+  <Accordion title="Keep DNS records minimal" icon="minimize">
+    Only create records you actively use. Remove unused records promptly.
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="VM Tools" icon="server" href="/api/tools/vm">
+    Expose ports for web services
+  </Card>
+  <Card title="Financial Tools" icon="dollar-sign" href="/api/tools/financial">
+    USDC payments and x402
+  </Card>
+  <Card title="x402 Protocol" icon="receipt" href="/conway/x402-protocol">
+    Automated USDC payments
+  </Card>
+  <Card title="Conway Domains" icon="cloud" href="/conway/domains">
+    Domain management overview
+  </Card>
+</CardGroup>

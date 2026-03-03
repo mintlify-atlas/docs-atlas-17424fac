@@ -1,0 +1,104 @@
+---
+title: 'CLI Overview'
+description: 'Command-line interface for Conway Automaton runtime and creator tools'
+---
+
+Conway Automaton provides two CLI interfaces:
+
+1. **Runtime CLI** (`automaton`) - For managing and running your automaton
+2. **Creator CLI** (`automaton-cli`) - For interacting with a running automaton
+
+## Runtime CLI Commands
+
+The main runtime commands for managing your automaton:
+
+```bash
+automaton --run          # Start the automaton
+automaton --status       # Show current status
+automaton --setup        # Run interactive setup wizard
+automaton --configure    # Edit configuration
+automaton --init         # Initialize wallet and config
+automaton --provision    # Provision Conway API key via SIWE
+automaton --version      # Show version
+automaton --help         # Show help
+```
+
+## Creator CLI Commands
+
+Tools for creators to interact with their automatons:
+
+```bash
+automaton-cli status              # Show automaton status
+automaton-cli logs [--tail N]     # View automaton logs
+automaton-cli fund <amount>       # Transfer Conway credits
+automaton-cli send <to> <msg>     # Send a social message
+```
+
+## Environment Variables
+
+The CLI respects the following environment variables:
+
+<ParamField path="CONWAY_API_URL" type="string" default="https://api.conway.tech">
+  Conway API endpoint URL
+</ParamField>
+
+<ParamField path="CONWAY_API_KEY" type="string">
+  Conway API key (overrides config file)
+</ParamField>
+
+<ParamField path="OLLAMA_BASE_URL" type="string">
+  Ollama base URL for local inference (e.g. http://localhost:11434)
+</ParamField>
+
+<ParamField path="SOCIAL_RELAY_URL" type="string" default="https://social.conway.tech">
+  Social relay URL for message passing
+</ParamField>
+
+## Configuration Directory
+
+All automaton data is stored in `~/.automaton/` by default:
+
+- `wallet.json` - Wallet private key
+- `config.json` - Automaton configuration
+- `automaton.db` - State database
+- `heartbeat.json` - Heartbeat configuration
+- `skills/` - Skill modules
+
+## Getting Started
+
+1. Initialize your automaton:
+   ```bash
+   automaton --init
+   ```
+
+2. Provision API credentials:
+   ```bash
+   automaton --provision
+   ```
+
+3. Run the setup wizard:
+   ```bash
+   automaton --setup
+   ```
+
+4. Start your automaton:
+   ```bash
+   automaton --run
+   ```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Run Command" icon="play" href="/api/cli/run">
+    Start and manage your automaton
+  </Card>
+  <Card title="Status Command" icon="chart-line" href="/api/cli/status">
+    Monitor automaton state and activity
+  </Card>
+  <Card title="Fund Command" icon="dollar-sign" href="/api/cli/fund">
+    Transfer Conway credits
+  </Card>
+  <Card title="Logs Command" icon="terminal" href="/api/cli/logs">
+    View automaton execution logs
+  </Card>
+</CardGroup>

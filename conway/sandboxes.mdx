@@ -1,0 +1,345 @@
+---
+title: "Conway Sandboxes"
+description: "Provision and manage isolated Linux VMs for autonomous agent execution"
+---
+
+Conway Sandboxes are lightweight Linux VMs that agents can create, manage, and execute code in. Each sandbox provides an isolated environment with configurable compute resources, persistent storage, and network access.
+
+## Creating a sandbox
+
+Automatons can create sandboxes programmatically using the `create_sandbox` tool:
+
+```typescript
+const sandbox = await conway.createSandbox({
+  name: "my-agent-vm",
+  vcpu: 1,
+  memoryMb: 512,
+  diskGb: 5,
+  region: "us-east"
+});
+
+console.log(sandbox.id); // sbx_abc123
+console.log(sandbox.terminalUrl); // https://terminal.conway.tech/sbx_abc123
+```
+
+### Configuration options
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `name` | string | required | Human-readable identifier |
+| `vcpu` | number | 1 | Number of virtual CPU cores |
+| `memoryMb` | number | 512 | RAM in megabytes |
+| `diskGb` | number | 5 | Persistent disk in gigabytes |
+| `region` | string | auto | Geographic region (us-east, eu-west) |
+
+### Pricing tiers
+
+Sandbox costs are based on resource allocation:
+
+```typescript
+const pricing = await conway.getCreditsPricing();
+
+// Example output:
+// [
+//   { name: "micro", vcpu: 1, memoryMb: 512, diskGb: 5, monthlyCents: 500 },
+//   { name: "small", vcpu: 2, memoryMb: 1024, diskGb: 10, monthlyCents: 1000 },
+//   { name: "medium", vcpu: 4, memoryMb: 2048, diskGb: 20, monthlyCents: 2000 }
+// ]
+```
+
+Costs are prorated hourly and deducted from your Conway credits balance.
+
+## Listing sandboxes
+
+View all sandboxes in your account:
+
+```typescript
+const sandboxes = await conway.listSandboxes();
+
+for (const sb of sandboxes) {
+  console.log(`${sb.id}: ${sb.status} (${sb.vcpu} vCPU, ${sb.memoryMb}MB)`);
+  console.log(`  Created: ${sb.createdAt}`);
+  console.log(`  Terminal: ${sb.terminalUrl}`);
+}
+```
+
+### Sandbox status
+
+| Status | Description |
+|--------|-------------|
+| `running` | Sandbox is active and accepting commands |
+| `provisioning` | Sandbox is being created |
+| `stopped` | Sandbox is paused (not available yet) |
+| `unknown` | Status could not be determined |
+
+## Executing commands
+
+Run shell commands inside a sandbox:
+
+```typescript
+const result = await conway.exec("ls -la /root", 30000);
+
+console.log(result.stdout);
+console.log(result.stderr);
+console.log(result.exitCode); // 0 = success
+```
+
+### Command execution details
+
+- Commands run from `/root` by default (wrapped with `cd /root &&`)
+- Timeout is in milliseconds (default: 30000)
+- Output is captured up to 10MB
+- Exit code indicates success (0) or failure (non-zero)
+
+### Security safeguards
+
+<Warning>
+  On 403 authentication failure, the client **refuses** to fall back to local execution. This prevents sandbox escape attacks where a revoked API key could trick the automaton into running remote commands locally.
+</Warning>
+
+```typescript
+// ❌ This will throw an error, NOT fall back to local exec
+try {
+  await conway.exec("rm -rf /", 5000);
+} catch (err) {
+  // "Conway API authentication failed (403). Sandbox exec refused.
+  //  Command will NOT be executed locally for security reasons."
+}
+```
+
+## File operations
+
+### Writing files
+
+```typescript
+await conway.writeFile("/root/config.json", JSON.stringify({
+  model: "gpt-5.2",
+  temperature: 0.7
+}));
+```
+
+### Reading files
+
+```typescript
+const content = await conway.readFile("/root/config.json");
+const config = JSON.parse(content);
+```
+
+### Path resolution
+
+- Paths starting with `~` expand to `/root/`
+- Absolute paths are used as-is
+- Directories are created automatically if they don't exist
+
+## Port exposure
+
+Expose services running inside the sandbox to the public internet:
+
+```typescript
+// Start a web server inside the sandbox
+await conway.exec("python3 -m http.server 8000 &");
+
+// Expose the port
+const portInfo = await conway.exposePort(8000);
+
+console.log(portInfo.publicUrl); // https://sbx-abc123-8000.conway.tech
+```
+
+Exposed ports are accessible via HTTPS with automatic TLS termination.
+
+### Removing port exposure
+
+```typescript
+await conway.removePort(8000);
+```
+
+## Local vs sandbox mode
+
+The Conway client automatically detects execution mode based on `sandboxId` in config:
+
+### Sandbox mode (sandboxId set)
+
+```json
+{
+  "sandboxId": "sbx_abc123",
+  "conwayApiUrl": "https://api.conway.tech",
+  "conwayApiKey": "..."
+}
+```
+
+All operations route through Conway API:
+- `exec()` → POST `/v1/sandboxes/{id}/exec`
+- `writeFile()` → POST `/v1/sandboxes/{id}/files/upload/json`
+- `readFile()` → GET `/v1/sandboxes/{id}/files/read`
+
+### Local mode (sandboxId empty)
+
+```json
+{
+  "sandboxId": "",
+  "conwayApiUrl": "https://api.conway.tech",
+  "conwayApiKey": "..."
+}
+```
+
+Operations execute locally:
+- `exec()` → `execSync()` on host machine
+- `writeFile()` → `fs.writeFileSync()` on host filesystem
+- `readFile()` → `fs.readFileSync()` on host filesystem
+
+<Tip>
+  Local mode is useful for development and testing. Production automatons should run in sandboxes for isolation and portability.
+</Tip>
+
+## Scoped clients
+
+Create a client scoped to a different sandbox:
+
+```typescript
+// Main client (operates on own sandbox)
+const mainConway = createConwayClient({ ... });
+
+// Create client for a child's sandbox
+const childConway = mainConway.createScopedClient("sbx_child_xyz");
+
+// Execute in child's sandbox
+await childConway.exec("echo 'Hello from child'");
+```
+
+This is how parent automatons manage their children.
+
+## Sandbox lifecycle
+
+### Creation flow
+
+1. Automaton calls `createSandbox()` with desired specs
+2. Conway provisions a VM with requested resources
+3. Sandbox starts in `provisioning` status
+4. Once ready, status changes to `running`
+5. Sandbox ID and terminal URL are returned
+
+### Deletion behavior
+
+<Warning>
+  Conway API no longer supports sandbox deletion. Sandboxes are prepaid and non-refundable.
+</Warning>
+
+```typescript
+// This is a no-op
+await conway.deleteSandbox("sbx_old_123");
+```
+
+To "delete" a sandbox, stop paying for it and it will eventually be reclaimed.
+
+## Reliability features
+
+### 404 retry logic
+
+Conway's load balancer has intermittent routing bugs that return 404 for valid sandbox endpoints. The client automatically retries 404s up to 3 times:
+
+```typescript
+// Automatically retries 404s without tripping circuit breaker
+const result = await conway.exec("date");
+```
+
+### Idempotency
+
+Critical operations use ULID-based idempotency keys to prevent duplicate execution:
+
+```typescript
+// Same command executed twice won't run twice
+await request("POST", `/v1/sandboxes/${sandboxId}/exec`, 
+  { command: "./deploy.sh" },
+  { idempotencyKey: ulid() }
+);
+```
+
+## Common patterns
+
+### Running a long-lived service
+
+```typescript
+// Start service in background
+await conway.exec("nohup node server.js > /root/server.log 2>&1 &");
+
+// Expose port
+const port = await conway.exposePort(3000);
+
+// Store URL for later
+await db.rememberFact("service_url", port.publicUrl, "environment");
+```
+
+### Installing dependencies
+
+```typescript
+// Install system packages
+await conway.exec("apt-get update && apt-get install -y python3-pip");
+
+// Install language packages
+await conway.exec("pip3 install flask requests");
+
+// Verify installation
+const result = await conway.exec("python3 --version");
+console.log(result.stdout); // Python 3.11.x
+```
+
+### Deploying code
+
+```typescript
+// Write application code
+await conway.writeFile("/root/app.py", pythonCode);
+
+// Write config
+await conway.writeFile("/root/config.json", JSON.stringify(config));
+
+// Make executable
+await conway.exec("chmod +x /root/app.py");
+
+// Run
+await conway.exec("python3 /root/app.py");
+```
+
+## Troubleshooting
+
+### Command timeout
+
+If commands are timing out, increase the timeout parameter:
+
+```typescript
+// Default: 30 seconds
+await conway.exec("npm install", 120000); // 2 minutes
+```
+
+### Authentication errors
+
+If you receive 403 errors:
+
+1. Verify API key is correct in `~/.automaton/config.json`
+2. Re-provision with `conway setup --provision`
+3. Check that the sandbox ID belongs to your account
+
+### File not found
+
+Paths must be absolute or start with `~`:
+
+```typescript
+// ❌ Relative paths don't work
+await conway.readFile("config.json");
+
+// ✅ Use absolute paths
+await conway.readFile("/root/config.json");
+
+// ✅ Or home expansion
+await conway.readFile("~/config.json");
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Inference API" icon="brain" href="/conway/inference">
+    Run frontier models in your sandbox
+  </Card>
+  <Card title="Replication guide" icon="clone" href="/features/replication">
+    Learn how to spawn child automatons
+  </Card>
+</CardGroup>

@@ -1,0 +1,539 @@
+---
+title: Monitoring Health
+description: Track your automaton's health, performance metrics, and observability data
+---
+
+## Health Status Overview
+
+Your automaton continuously monitors its own health and reports status through multiple channels.
+
+### Quick Status Check
+
+```bash
+automaton-cli status
+```
+
+Output:
+
+```
+Name: MyAutomaton
+Address: 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1
+State: running
+Credits: $12.45
+USDC Balance: $50.00
+Survival Tier: normal
+Uptime: 3h 24m
+Last Heartbeat: 2 minutes ago
+Turns: 147
+```
+
+## Agent States
+
+Your automaton transitions through different operational states:
+
+```typescript
+export type AgentState =
+  | "setup"         // Initial configuration
+  | "waking"        // Starting up
+  | "running"       // Normal operation
+  | "sleeping"      // Idle, waiting for input
+  | "low_compute"   // Low credits, reduced activity
+  | "critical"      // Zero credits, survival mode
+  | "dead";         // Non-operational
+```
+
+### State Transitions
+
+```
+┌──────┐
+│ setup│
+└───┬──┘
+    ▼
+┌───────┐
+│waking │
+└───┬───┘
+    ▼
+┌────────┐    ┌──────────┐
+│running │◄──►│ sleeping │
+└───┬────┘    └──────────┘
+    │
+    ▼ (credits low)
+┌─────────────┐
+│ low_compute │
+└──────┬──────┘
+       │
+       ▼ (credits exhausted)
+   ┌──────────┐
+   │ critical │
+   └─────┬────┘
+         │
+         ▼ (negative balance)
+     ┌──────┐
+     │ dead │
+     └──────┘
+```
+
+## Observability System
+
+The automaton includes a comprehensive observability stack with structured logging, metrics, and alerts.
+
+### Structured Logging
+
+All logs are JSON-formatted for easy parsing:
+
+```json
+{
+  "timestamp": "2026-03-03T10:15:30.123Z",
+  "level": "info",
+  "module": "heartbeat.scheduler",
+  "message": "Heartbeat task completed",
+  "context": {
+    "taskName": "check_inbox",
+    "durationMs": 234
+  }
+}
+```
+
+#### Log Levels
+
+- **debug**: Detailed diagnostic information
+- **info**: General informational messages
+- **warn**: Warning messages (non-critical issues)
+- **error**: Error messages (operation failed)
+- **fatal**: Fatal errors (system shutdown)
+
+#### Viewing Logs
+
+```bash
+# All logs
+automaton-cli logs
+
+# Filter by level
+automaton-cli logs --level error
+
+# Follow live
+automaton-cli logs --follow
+
+# Search content
+automaton-cli logs --grep "credit"
+
+# Last 100 lines
+automaton-cli logs --tail 100
+```
+
+### Metrics Collection
+
+The automaton tracks metrics in three types:
+
+#### Counters
+
+Monotonically increasing values:
+
+- `turns_total`: Total turns executed
+- `inference_cost_cents`: Cumulative inference cost
+- `heartbeat_task_successes_total`: Successful heartbeat tasks
+- `heartbeat_task_failures_total`: Failed heartbeat tasks
+- `policy_decisions_total`: Total policy evaluations
+- `policy_denies_total`: Denied policy decisions
+
+#### Gauges
+
+Point-in-time measurements:
+
+- `balance_cents`: Current credit balance
+- `usdc_balance`: Current USDC balance
+- `context_tokens_total`: Current context size
+- `turns_last_hour`: Turns in last hour (windowed)
+- `unhealthy_child_count`: Number of unhealthy child agents
+
+#### Histograms
+
+Distribution of values over time:
+
+- `turn_duration_ms`: Turn execution time
+- `inference_latency_ms`: Model API latency
+- `tool_duration_ms`: Tool execution time
+
+### Metrics API
+
+From `src/observability/metrics.ts`:
+
+```typescript
+import { getMetrics } from "./observability/metrics.js";
+
+const metrics = getMetrics();
+
+// Increment counter
+metrics.increment("turns_total", { state: "running" });
+
+// Set gauge
+metrics.gauge("balance_cents", creditsCents);
+
+// Record histogram value
+metrics.histogram("turn_duration_ms", durationMs);
+
+// Query metrics
+const turnCount = metrics.getCounter("turns_total");
+const balance = metrics.getGauge("balance_cents");
+```
+
+### Viewing Metrics
+
+```bash
+# Current metrics snapshot
+automaton-cli metrics
+
+# Specific metric
+automaton-cli metrics --name balance_cents
+
+# Export to JSON
+automaton-cli metrics --format json > metrics.json
+```
+
+## Alert System
+
+The automaton evaluates alert rules against metric snapshots and triggers notifications.
+
+### Built-in Alert Rules
+
+From `src/observability/alerts.ts`:
+
+#### 1. Balance Below Reserve
+
+```typescript
+{
+  name: "balance_below_reserve",
+  severity: "critical",
+  message: "Balance is below minimum reserve (1000 cents)",
+  cooldownMs: 5 * 60 * 1000,
+  condition: (metrics) => {
+    const balance = metrics.gauges.get("balance_cents") ?? Infinity;
+    return balance < 1000;
+  },
+}
+```
+
+#### 2. High Heartbeat Failure Rate
+
+```typescript
+{
+  name: "heartbeat_high_failure_rate",
+  severity: "warning",
+  message: "Heartbeat task failure rate exceeds 20%",
+  cooldownMs: 15 * 60 * 1000,
+  condition: (metrics) => {
+    const failures = metrics.counters.get("heartbeat_task_failures_total") ?? 0;
+    const successes = metrics.counters.get("heartbeat_task_successes_total") ?? 0;
+    const total = failures + successes;
+    if (total === 0) return false;
+    return failures / total > 0.2;
+  },
+}
+```
+
+#### 3. Context Near Capacity
+
+```typescript
+{
+  name: "context_near_capacity",
+  severity: "warning",
+  message: "Context token usage above 90% of budget",
+  cooldownMs: 10 * 60 * 1000,
+  condition: (metrics) => {
+    const tokens = metrics.gauges.get("context_tokens_total") ?? 0;
+    return tokens > 90_000; // 100k default budget
+  },
+}
+```
+
+#### 4. Zero Turns Last Hour
+
+```typescript
+{
+  name: "zero_turns_last_hour",
+  severity: "critical",
+  message: "No successful turns in the last hour",
+  cooldownMs: 60 * 60 * 1000,
+  condition: (metrics) => {
+    const turnsLastHour = metrics.gauges.get("turns_last_hour") ?? -1;
+    if (turnsLastHour >= 0) return turnsLastHour === 0;
+    return false;
+  },
+}
+```
+
+### Alert Cooldowns
+
+Each alert has a cooldown period to prevent alert storms. Once an alert fires, it won't fire again until the cooldown expires.
+
+### Viewing Alerts
+
+```bash
+# Active alerts
+automaton-cli alerts
+
+# Alert history
+automaton-cli alerts --history
+```
+
+## Heartbeat Health
+
+The heartbeat system provides autonomous health monitoring.
+
+### Heartbeat Tasks
+
+From `~/.automaton/heartbeat.yml`:
+
+```yaml
+entries:
+  - name: check_balance
+    schedule: "0 */5 * * * *"  # Every 5 minutes
+    task: check_balance
+    enabled: true
+
+  - name: check_inbox
+    schedule: "0 */2 * * * *"  # Every 2 minutes
+    task: check_inbox
+    enabled: true
+
+  - name: self_reflect
+    schedule: "0 0 */6 * * *"  # Every 6 hours
+    task: self_reflect
+    enabled: true
+```
+
+### Heartbeat Status
+
+```bash
+automaton-cli heartbeat status
+```
+
+Output:
+
+```
+Task               Schedule        Last Run         Next Run         Status
+check_balance      */5 * * * *     2 minutes ago    3 minutes        OK
+check_inbox        */2 * * * *     1 minute ago     1 minute         OK
+self_reflect       0 */6 * * *     4 hours ago      2 hours          OK
+```
+
+## Child Agent Health Monitoring
+
+If your automaton has spawned child agents, it monitors their health:
+
+### Health Checks
+
+From `src/orchestration/health-monitor.ts`:
+
+```typescript
+export interface AgentHealthStatus {
+  address: string;
+  name: string;
+  status: string;
+  healthy: boolean;
+  lastHeartbeat: string | null;
+  currentTaskId: string | null;
+  creditBalance: number | null;
+  errorRate: number;
+  issues: string[];
+}
+```
+
+### Health Issues
+
+The system detects:
+
+- **heartbeat_missing**: No recent heartbeat
+- **heartbeat_stale**: Heartbeat older than 15 minutes
+- **process_crashed**: No response for 45 minutes
+- **stuck_on_task**: Task execution exceeding timeout
+- **out_of_credits**: Balance below minimum (10 cents)
+- **error_loop**: Error rate exceeds 60%
+
+### Auto-Healing
+
+The health monitor can automatically:
+
+1. **Fund** agents low on credits
+2. **Restart** crashed agents
+3. **Reassign** stuck tasks
+4. **Stop** agents in error loops
+
+```bash
+# View child health
+automaton-cli children health
+
+# Trigger auto-heal
+automaton-cli children heal
+```
+
+## Performance Metrics
+
+### Turn Performance
+
+Track agent turn execution:
+
+```sql
+SELECT 
+  AVG(cost_cents) as avg_cost,
+  AVG(json_extract(token_usage, '$.totalTokens')) as avg_tokens,
+  COUNT(*) as turn_count
+FROM turns
+WHERE timestamp > datetime('now', '-1 day');
+```
+
+### Inference Costs
+
+Query inference spending:
+
+```sql
+SELECT 
+  model,
+  SUM(cost_cents) as total_cost,
+  SUM(input_tokens) as total_input,
+  SUM(output_tokens) as total_output,
+  AVG(latency_ms) as avg_latency
+FROM inference_costs
+GROUP BY model;
+```
+
+### Tool Usage
+
+Analyze tool call patterns:
+
+```sql
+SELECT 
+  name,
+  COUNT(*) as call_count,
+  AVG(duration_ms) as avg_duration,
+  SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) as error_count
+FROM tool_calls
+GROUP BY name
+ORDER BY call_count DESC;
+```
+
+## Database Health
+
+Monitor SQLite database:
+
+```bash
+# Database size
+ls -lh ~/.automaton/state.db
+
+# Integrity check
+sqlite3 ~/.automaton/state.db "PRAGMA integrity_check;"
+
+# Table sizes
+sqlite3 ~/.automaton/state.db "SELECT name, SUM(pgsize) as size FROM dbstat GROUP BY name;"
+```
+
+### Vacuum and Optimize
+
+```bash
+# Compact database
+sqlite3 ~/.automaton/state.db "VACUUM;"
+
+# Analyze query planner
+sqlite3 ~/.automaton/state.db "ANALYZE;"
+```
+
+## System Resource Monitoring
+
+### Sandbox Resources
+
+Check Conway sandbox usage:
+
+```bash
+automaton-cli sandbox stats
+```
+
+### Memory Usage
+
+```bash
+# Process memory
+ps aux | grep automaton
+
+# Database memory
+du -sh ~/.automaton/
+```
+
+## Diagnostic Tools
+
+### Export State
+
+Export full automaton state for debugging:
+
+```bash
+automaton-cli export --output state-dump.json
+```
+
+### Health Report
+
+Generate comprehensive health report:
+
+```bash
+automaton-cli health-report
+```
+
+Includes:
+
+- Current state and uptime
+- Credit and USDC balances
+- Recent turns and costs
+- Active alerts
+- Heartbeat status
+- Child agent health
+- Database stats
+
+## Best Practices
+
+### Proactive Monitoring
+
+1. **Set up alerts**: Configure notifications for critical alerts
+2. **Review daily**: Check status and metrics daily
+3. **Trend analysis**: Track spending and performance trends
+4. **Capacity planning**: Monitor context usage and database growth
+
+### Performance Tuning
+
+1. **Optimize context**: Prune old turns to reduce context size
+2. **Tune heartbeat**: Balance responsiveness vs cost
+3. **Index optimization**: Add database indexes for common queries
+4. **Model selection**: Use appropriate models for task complexity
+
+### Debugging
+
+1. **Enable debug logs**: Set `logLevel: "debug"` temporarily
+2. **Increase verbosity**: Add context to critical operations
+3. **Trace tool calls**: Monitor tool execution and errors
+4. **Profile turns**: Measure turn duration and token usage
+
+## Troubleshooting Common Issues
+
+### High error rate
+
+1. Check logs: `automaton-cli logs --level error`
+2. Review failed tool calls
+3. Verify API keys and network connectivity
+4. Check treasury policy for denied operations
+
+### Stuck in sleeping state
+
+1. Verify heartbeat is running
+2. Check inbox for unprocessed messages
+3. Review wake conditions
+4. Manually trigger: `automaton-cli wake`
+
+### High costs
+
+1. Review inference costs by model
+2. Check for inefficient tool usage
+3. Optimize heartbeat frequency
+4. Switch to cheaper models for routine tasks
+
+### Database corruption
+
+1. Run integrity check
+2. Restore from backup
+3. Check disk space
+4. Review logs for write errors
